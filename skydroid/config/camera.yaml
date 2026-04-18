@@ -1,0 +1,24 @@
+camera_node:
+  ros__parameters:
+
+    # --- RTSP stream URLs (GStreamer pipeline) ---
+    rgb_url: >-
+      rtspsrc location=rtsp://192.168.144.108:554/stream=1 latency=50 !
+      decodebin ! videoconvert !
+      appsink sync=false drop=true max-buffers=1
+
+    thermal_url: >-
+      rtspsrc location=rtsp://192.168.144.108:555/stream=2 latency=50 !
+      decodebin ! videoconvert !
+      appsink sync=false drop=true max-buffers=1
+
+    # --- Capture rate ---
+    fps: 30
+
+    # --- Reconnect settings ---
+    # Sau bao nhiêu frame lỗi liên tiếp thì reconnect (fps * giây)
+    # Ví dụ: 90 = 3 giây ở 30fps
+    fail_threshold: 90
+
+    # Thời gian chờ tối thiểu giữa 2 lần reconnect (giây)
+    reconnect_cooldown_s: 5
