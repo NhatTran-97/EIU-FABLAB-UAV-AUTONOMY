@@ -53,10 +53,32 @@ target_include_directories(offboard_mode
   $<INSTALL_INTERFACE:include>)    
 
 
+
+
+
+add_executable(custom_mode
+    src/custom_mode.cpp)
+
+ament_target_dependencies(custom_mode
+    rclcpp
+    Eigen3
+    px4_ros2_cpp
+    geometry_msgs
+)
+
+target_include_directories(custom_mode
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)    
+
+
+
+
+
 install(TARGETS
     teleop
     teleop_executor
     offboard_mode
+    custom_mode
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION  lib/${PROJECT_NAME}
