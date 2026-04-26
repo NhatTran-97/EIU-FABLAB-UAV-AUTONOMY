@@ -1,0 +1,12 @@
+<RCC>
+    <qresource prefix="/">
+        <file>qml/main.qml</file>
+        <file>qml/components/SerialPanel.qml</file>
+        <file>qml/components/GimbalPanel.qml</file>
+        <file>qml/components/Joystick.qml</file>
+        <file>qml/components/GimbalSlider.qml</file>
+        <file>qml/components/PtzButton.qml</file>
+        <file>qml/components/VelGauge.qml</file>
+        <file>qml/components/AttitudeBox.qml</file>
+    </qresource>
+</RCC>
