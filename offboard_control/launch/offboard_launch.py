@@ -9,10 +9,10 @@ def generate_launch_description():
 
     offboard_node = Node(
             package='offboard_control',
-            executable='offboard_mode',
-            name='offboard_node',
+            executable='test_mode',
+            name='test_mode',
             output='screen',
-            parameters=[os.path.join(offboard_pkg, "config", "params.yaml")],
+            # parameters=[os.path.join(offboard_pkg, "config", "offboard.yaml")],
         )
 
     return LaunchDescription([

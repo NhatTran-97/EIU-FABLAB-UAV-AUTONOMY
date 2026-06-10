@@ -1,3 +1,0 @@
-teleop:
-  ros__parameters:
-    teleop_duration: 30.0

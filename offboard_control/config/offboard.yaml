@@ -1,3 +1,0 @@
-offboard_node:
-  ros__parameters:
-    takeoff_height_: 3.5
