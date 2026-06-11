@@ -16,6 +16,8 @@
 #include <mutex>
 #include <atomic>
 #include <vector>
+#include <fstream>
+#include <string>
 
 using namespace std::chrono_literals;
 
@@ -155,6 +157,15 @@ private:
     double carrot_x_{0.0};          // current carrot position (EKF frame; z already absolute)
     double carrot_y_{0.0};
     double carrot_z_{0.0};
+
+    // --- Debug file logging: append timestamped mission/flight events to a file for offline
+    //     analysis (separate from the ROS console). Opened in the constructor, flushed each
+    //     write so a power-off still leaves a complete trace. Path = 'mission_log_file' param,
+    //     default $HOME/mission_debug.log. ---
+    void log_event(const std::string &msg);     // thread-safe: timestamp + msg -> mission_log_
+    std::ofstream mission_log_;
+    std::mutex mission_log_mtx_;
+    bool flight_decision_logged_{false};         // one-shot: log the mission-vs-hover decision once
 
 };
 

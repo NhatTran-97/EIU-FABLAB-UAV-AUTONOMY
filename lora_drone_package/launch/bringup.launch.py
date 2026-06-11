@@ -48,6 +48,16 @@ def generate_launch_description():
         executable='lora_drone',   # trùng console_scripts trong setup.py
         name='lora_drone',
         output='screen',
+        additional_env={
+            # Write the LoRa RX/mission debug log into the bind-mounted workspace so the file
+            # is visible on the host: /home/drone_ws (container) == /home/fablab01/drone_ws
+            # (Jetson) == ~/nhatbot_remote (laptop via sshfs). Without this it defaults to
+            # $HOME/lora_drone_debug.log = /root/... inside the container (invisible on host).
+            'LORA_DRONE_LOG_FILE': '/home/drone_ws/lora_drone_debug.log',
+            # Telemetry cadence (s). Wider gap = more robust ground->drone command/mission
+            # delivery on the half-duplex LoRa link. Code default is already 1.0.
+            'LORA_DRONE_TELEMETRY_INTERVAL': '1.0',
+        },
     )
 
     return LaunchDescription([

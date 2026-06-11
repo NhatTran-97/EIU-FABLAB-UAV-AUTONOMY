@@ -94,7 +94,7 @@ class LoraDrone(Node):
         self.serial_lock = Lock()
         self._reopen_lock = Lock()
         self._stop_event = threading.Event()
-        self.serial_path = os.environ.get('LORA_DRONE_PORT', '/dev/lora_ground')
+        self.serial_path = os.environ.get('LORA_DRONE_PORT', '/dev/lora_drone')
         self.serial_baudrate = int(os.environ.get('LORA_DRONE_BAUD', '9600'))
         # 0.5s = 2 Hz. Safe on the 19.2kbps E32 link (~500 B/s capacity, ~24% used).
         # Override with LORA_DRONE_TELEMETRY_INTERVAL; do not go below ~0.3 (GPS packets
@@ -125,6 +125,27 @@ class LoraDrone(Node):
         # When a mission op is in progress we suppress telemetry TX for a short window
         # so the half-duplex LoRa channel is free for the next chunk/ACK exchange.
         self._tlm_suppress_until = 0.0
+
+        # --- RX link-health counters: so a field operator can see WHY an upload fails —
+        # truncated lines (length mismatch vs what ground sent), CRC drops, or chunks that
+        # never arrive. Logged as a periodic summary + on every mission op. ---
+        self._rx_stats = {"ok": 0, "no_json": 0, "decode_fail": 0, "crc_fail": 0}
+        self._rx_stats_last_log = 0.0
+        self._rx_stats_interval = float(os.environ.get("LORA_DRONE_RXSTATS_INTERVAL", "30.0"))
+
+        # Dedicated debug log FILE (separate from the ROS console) so a field run can be
+        # analysed offline next to test.cpp's mission_debug.log. Default $HOME/lora_drone_debug.log;
+        # override with LORA_DRONE_LOG_FILE. In the Docker stack point it at a bind-mounted path
+        # (e.g. /home/drone_ws/lora_drone_debug.log) so the file is visible on the host.
+        self._dbg_path = os.environ.get(
+            "LORA_DRONE_LOG_FILE", os.path.expanduser("~/lora_drone_debug.log"))
+        try:
+            self._dbg_file = open(self._dbg_path, "a", buffering=1)   # line-buffered
+            self.get_logger().info(f"📝 LoRa debug log -> {self._dbg_path}")
+        except Exception as e:
+            self._dbg_file = None
+            self.get_logger().warn(f"⚠️ Could not open LoRa debug log {self._dbg_path}: {e}")
+        self._dbg("================ lora_drone start ================")
 
         # Open serial with a few retries (USB-LoRa may enumerate slightly late), then
         # fail loudly instead of leaving a spinning-but-dead node.
@@ -364,6 +385,11 @@ class LoraDrone(Node):
                 "chunks": {},
                 "created_at": time.monotonic(),
             }
+            self.get_logger().info(
+                f"🧩 mission {mission_id} BEGIN — expecting {total_chunks} chunks, "
+                f"{total_count} waypoints"
+            )
+            self._dbg(f"MISSION {mission_id} BEGIN expect={total_chunks}chunks/{total_count}wps")
             self._send_ack({
                 "event": "mission_begin",
                 "status": True,
@@ -434,6 +460,14 @@ class LoraDrone(Node):
                 return
 
             session["chunks"][chunk_index] = parsed
+            have = sorted(session["chunks"].keys())
+            missing = [i for i in range(session["total_chunks"]) if i not in session["chunks"]]
+            self.get_logger().info(
+                f"🧩 mission {mission_id}: chunk {chunk_index} OK ({len(parsed)} wps) — "
+                f"have {have}/{session['total_chunks']}, still missing {missing}"
+            )
+            self._dbg(f"MISSION {mission_id} CHUNK {chunk_index} OK ({len(parsed)}wps) "
+                      f"have={have} missing={missing}")
             self._send_ack({
                 "event": "mission_chunk",
                 "status": True,
@@ -466,6 +500,13 @@ class LoraDrone(Node):
 
             missing = [i for i in range(session["total_chunks"]) if i not in session["chunks"]]
             if missing:
+                self.get_logger().warn(
+                    f"❌ mission {mission_id} COMMIT rejected — missing chunks {missing} "
+                    f"(have {sorted(session['chunks'].keys())}/{session['total_chunks']}). "
+                    f"Those chunks never arrived intact — check RX truncation logs above."
+                )
+                self._dbg(f"MISSION {mission_id} COMMIT-FAIL missing={missing} "
+                          f"have={sorted(session['chunks'].keys())}")
                 self._send_ack({
                     "event": "uploaded",
                     "status": False,
@@ -495,6 +536,8 @@ class LoraDrone(Node):
                     f"Published mission {mission_id}: {len(waypoints)} waypoints "
                     f"in {session['total_chunks']} chunks"
                 )
+                self._dbg(f"MISSION {mission_id} PUBLISHED {len(waypoints)}wps -> /mission_path "
+                          f"(OK, full upload)")
                 self._missions.pop(mission_id, None)
                 self._send_ack({
                     "event": "uploaded",
@@ -713,6 +756,36 @@ class LoraDrone(Node):
                 self.get_logger().error(f"❌ Error sending serial data: {e}")
             time.sleep(self.telemetry_interval)
 
+    def _dbg(self, msg):
+        # Append one timestamped line to the dedicated LoRa debug file (best-effort; never
+        # let logging crash the RX path). Line-buffered, so it survives a power-off.
+        f = self._dbg_file
+        if f is None:
+            return
+        try:
+            f.write(f"{time.time():.3f}  {msg}\n")
+        except Exception:
+            pass
+
+    def _maybe_log_rx_stats(self):
+        # Periodic one-line RX-health summary. Watch the bad counters climb in real time:
+        # rising no_json/decode = packets arriving truncated (half-duplex collision); rising
+        # crc = corrupted bytes. ok climbing with no bad = healthy link.
+        now = time.monotonic()
+        if now - self._rx_stats_last_log < self._rx_stats_interval:
+            return
+        self._rx_stats_last_log = now
+        s = self._rx_stats
+        bad = s["no_json"] + s["decode_fail"] + s["crc_fail"]
+        if s["ok"] == 0 and bad == 0:
+            return   # nothing received this window — stay quiet
+        self.get_logger().info(
+            f"📊 RX health (cumulative): ok={s['ok']} | bad={bad} "
+            f"(no_json={s['no_json']} decode={s['decode_fail']} crc={s['crc_fail']})"
+        )
+        self._dbg(f"RX_HEALTH ok={s['ok']} bad={bad} "
+                  f"(no_json={s['no_json']} decode={s['decode_fail']} crc={s['crc_fail']})")
+
     def read_serial(self):
         while rclpy.ok() and not self._stop_event.is_set():
             try:
@@ -730,6 +803,7 @@ class LoraDrone(Node):
                 if DEBUG:
                     self.get_logger().info(f"[DRONE][RX_LINE] {line}")
                 self.handle_command(line)
+                self._maybe_log_rx_stats()
             except (serial.SerialException, OSError) as e:
                 if self._stop_event.is_set() or not rclpy.ok():
                     break
@@ -747,19 +821,27 @@ class LoraDrone(Node):
 
         clean = _clean_json_str(line)
         if not clean:
-            self.get_logger().warn(f"⚠️ No JSON object in line: {line}")
+            self._rx_stats["no_json"] += 1
+            # len= is the truncation tell: if ground sent ~172B but we see len=90, the
+            # half-duplex collision cut the packet (or the E32 idle-timeout split it).
+            self.get_logger().warn(f"⚠️ No JSON object in line (len={len(line)}B): {line}")
+            self._dbg(f"RX_BAD no_json len={len(line)} : {line[:120]}")
             return
 
         try:
             raw_cmd = json.loads(clean)
         except json.JSONDecodeError:
-            self.get_logger().warn(f"⚠️ JSON decode failed: {clean}")
+            self._rx_stats["decode_fail"] += 1
+            self.get_logger().warn(f"⚠️ JSON decode failed (len={len(clean)}B): {clean}")
+            self._dbg(f"RX_BAD decode len={len(clean)} : {clean[:120]}")
             return
 
         cmd, crc_status = _unwrap_and_verify_crc(raw_cmd)
 
         if crc_status == "bad_crc":
-            self.get_logger().warn(f"❌ CRC mismatch -> drop packet: {line}")
+            self._rx_stats["crc_fail"] += 1
+            self.get_logger().warn(f"❌ CRC mismatch -> drop packet (len={len(line)}B): {line}")
+            self._dbg(f"RX_BAD crc len={len(line)} : {line[:120]}")
             return
 
         if cmd is None:
@@ -773,9 +855,12 @@ class LoraDrone(Node):
             return
 
         recv_crc = raw_cmd.get("crc32", "")
+        self._rx_stats["ok"] += 1
         self.get_logger().info(
-            f"✅ RX CRC OK={recv_crc} payload={json.dumps(cmd, separators=(',', ':'))}"
+            f"✅ RX CRC OK={recv_crc} ({len(line)}B) payload={json.dumps(cmd, separators=(',', ':'))}"
         )
+        self._dbg(f"RX_OK len={len(line)} op={cmd.get('op') or cmd.get('cmd') or '?'} "
+                  f"seq={cmd.get('seq')}")
 
         # Ground session id: if it changed, the ground app restarted (its seq counter went
         # back to 0) — clear the dedupe cache so a fresh seq isn't mistaken for a duplicate.

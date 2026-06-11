@@ -5,6 +5,9 @@
 #include <sched.h>
 #include <cerrno>
 #include <cstring>
+#include <cstdlib>   // std::getenv — resolve $HOME for the default log path
+#include <sstream>   // std::ostringstream — format log lines
+#include <iomanip>   // std::setprecision — timestamp / distance formatting
 
 /*
     This program commands the drone to take off to a specified altitude, hover in the air for approximately 10 seconds, and then initiate an automatic landing sequence.
@@ -90,6 +93,24 @@ OffboardMode::OffboardMode() : Node("offboard_node"), last_arm_request_(this->no
     this->declare_parameter("setpoint_rate_hz", 20.0);  // streamer rate to PX4 (must stay >2Hz)
     this->get_parameter("setpoint_rate_hz", setpoint_rate_hz_);
 
+    // Open the mission/flight debug log file (append mode). Default $HOME/mission_debug.log;
+    // override with the 'mission_log_file' param. Every event is flushed immediately so a
+    // mid-flight power-off still leaves a complete trace to analyse afterwards.
+    this->declare_parameter("mission_log_file", "");
+    std::string mission_log_path;
+    this->get_parameter("mission_log_file", mission_log_path);
+    if (mission_log_path.empty())
+    {
+        const char *home = std::getenv("HOME");
+        mission_log_path = std::string(home ? home : "/tmp") + "/mission_debug.log";
+    }
+    mission_log_.open(mission_log_path, std::ios::out | std::ios::app);
+    if (mission_log_.is_open())
+        RCLCPP_INFO(this->get_logger(), "📝 Mission debug log -> %s", mission_log_path.c_str());
+    else
+        RCLCPP_WARN(this->get_logger(), "⚠️ Could not open mission log file: %s", mission_log_path.c_str());
+    log_event("================ node start ================");
+
     delay_started_ = false;
     
     last_landed_state_ = mavros_msgs::msg::ExtendedState::LANDED_STATE_UNDEFINED;
@@ -161,6 +182,23 @@ OffboardMode::~OffboardMode()
     running_.store(false);
     if (setpoint_thread_.joinable())
         setpoint_thread_.join();
+
+    log_event("================ node stop ================");
+    if (mission_log_.is_open())
+        mission_log_.close();
+}
+
+void OffboardMode::log_event(const std::string &msg)
+{
+    // Thread-safe append of one timestamped line to the debug log, flushed immediately.
+    // Called from the control loop, mission_cb, and the service callback — hence the mutex.
+    std::lock_guard<std::mutex> lk(mission_log_mtx_);
+    if (!mission_log_.is_open())
+        return;
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(3) << this->now().seconds() << "  " << msg;
+    mission_log_ << os.str() << "\n";
+    mission_log_.flush();
 }
 
 void OffboardMode::try_set_realtime_priority()
@@ -247,6 +285,8 @@ void OffboardMode::mission_cb(const nav_msgs::msg::Path::SharedPtr msg)
     }
     RCLCPP_INFO(this->get_logger(), "🗺️  Mission received: %zu waypoints on /mission_path",
                 msg->poses.size());
+    log_event("MISSION_RX: received " + std::to_string(msg->poses.size()) +
+              " waypoints on /mission_path");
     const size_t n = std::min<size_t>(msg->poses.size(), 5);
     for (size_t i = 0; i < n; ++i)
     {
@@ -272,6 +312,7 @@ void OffboardMode::reset_flight_state()
     wp_index_           = 0;
     arm_lost_           = false;
     manual_restored_    = false;
+    flight_decision_logged_ = false;
 }
 
 void OffboardMode::pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
@@ -299,6 +340,7 @@ void OffboardMode::on_mode_signal(const std::shared_ptr<custom_msgs::srv::ModeSi
         start_offboard_.store(true);
         res->accepted = true;
         res->msg = "OFFBOARD sequence started";
+        log_event("CMD: OFFBOARD received -> reset + start takeoff sequence");
         RCLCPP_INFO(this->get_logger(), "ModeSignal: OFFBOARD -> reset + start takeoff sequence");
         return;
     }
@@ -484,13 +526,14 @@ void OffboardMode::handle_arm_response(rclcpp::Client<mavros_msgs::srv::CommandB
 {
     try {
         auto response = future.get();
-        if (response->success) 
+        if (response->success)
         {
             RCLCPP_INFO(this->get_logger(), "✅ Vehicle armed");
+            log_event("ARMED");
             last_arm_request_ = this->now();
             arm_time = this->now();
             has_armed = true;
-        } else 
+        } else
         {
             RCLCPP_WARN(this->get_logger(), "❌ Failed to arm vehicle");
         }
@@ -509,6 +552,8 @@ void OffboardMode::land_vehicle()
     {
         return;
     }
+
+    log_event("LAND: switching to AUTO.LAND");
 
     auto req = std::make_shared<mavros_msgs::srv::SetMode::Request>();
     req -> custom_mode = "AUTO.LAND";
@@ -645,6 +690,8 @@ void OffboardMode::control_loop()
             RCLCPP_WARN(this->get_logger(),
                         "🛑 Left OFFBOARD ('%s') after %.1fs stable — external override. Stop.",
                         current_state_.mode.c_str(), stable_sec);
+            log_event("ABORT: external override (PX4 left OFFBOARD -> '" +
+                      current_state_.mode + "')");
             aborted_ = true;
             return;
         }
@@ -689,6 +736,7 @@ void OffboardMode::control_loop()
         RCLCPP_ERROR(this->get_logger(),
                      "❌ Failed to ARM within %.0fs — aborting. Check PX4 pre-arm (position estimate / sensors).",
                      arm_timeout_sec_);
+        log_event("ABORT: failed to ARM within timeout (PX4 pre-arm: position/sensors?)");
         aborted_ = true;
         return;
     }
@@ -711,6 +759,7 @@ void OffboardMode::control_loop()
             RCLCPP_ERROR(this->get_logger(),
                          "❌ Could not re-ARM within %.0fs — aborting. Send OFFBOARD to retry.",
                          arm_timeout_sec_);
+            log_event("ABORT: lost arm mid-flight, could not re-ARM within timeout");
             aborted_ = true;
             return;
         }
@@ -727,6 +776,7 @@ void OffboardMode::control_loop()
         reached_altitude_ = true;
         altitude_reach_time_ = now;
         RCLCPP_INFO(this->get_logger(), "✅ Target altitude reached.");
+        log_event("ALTITUDE reached -> deciding mission vs hover");
     }
 
     // Altitude timeout (after ARM): emergency-land if we never climb.
@@ -735,6 +785,7 @@ void OffboardMode::control_loop()
     {
         RCLCPP_ERROR(this->get_logger(),
                      "🕒 Timeout: altitude not reached within 30s after ARM. Landing...");
+        log_event("ABORT: altitude not reached within 30s after ARM -> emergency land");
         land_vehicle();
         return;
     }
@@ -761,9 +812,32 @@ void OffboardMode::control_loop()
                 carrot_x_ = current_pose_.pose.position.x;
                 carrot_y_ = current_pose_.pose.position.y;
                 carrot_z_ = current_pose_.pose.position.z;
+                flight_decision_logged_ = true;
+                log_event("DECISION: FLY MISSION (" + std::to_string(active_wps_.size()) +
+                          " waypoints)");
                 RCLCPP_INFO(this->get_logger(),
                             "🗺️ Mission start: %zu WPs — cruising %.1f m/s, lead %.1fm",
                             active_wps_.size(), cruise_speed_, carrot_lead_);
+            }
+            else if (!flight_decision_logged_)
+            {
+                // At altitude with an EMPTY mission inbox -> we will just hover. This is the
+                // exact "mission behaved like a plain OFFBOARD" symptom: the upload never
+                // reached us on /mission_path. Log it ONCE, with how long ago (if ever) a
+                // mission last arrived, so the cause is unambiguous in the file.
+                flight_decision_logged_ = true;
+                const double age = (last_mission_recv_.nanoseconds() > 0)
+                                       ? (now - last_mission_recv_).seconds() : -1.0;
+                std::ostringstream os;
+                os << "DECISION: HOVER (no mission on /mission_path) - last mission ";
+                if (age < 0.0)
+                    os << "NEVER received since node start";
+                else
+                    os << "received " << std::fixed << std::setprecision(1) << age << "s ago";
+                log_event(os.str());
+                RCLCPP_WARN(this->get_logger(),
+                            "🚁 At altitude but NO mission on /mission_path — hovering only "
+                            "(mission upload likely failed).");
             }
         }
 
@@ -855,6 +929,9 @@ void OffboardMode::control_loop()
                         RCLCPP_INFO(this->get_logger(),
                                     "🏁 Mission complete (WP%zu, dist=%.2fm) — landing.",
                                     wp_index_ + 1, drone_dist);
+                    log_event(std::string("MISSION COMPLETE at WP") +
+                              std::to_string(wp_index_ + 1) +
+                              (timedout ? " (timeout)" : "") + " -> landing");
                     flying_mission_ = false;
                     land_vehicle();
                 }
@@ -871,6 +948,9 @@ void OffboardMode::control_loop()
                     RCLCPP_INFO(this->get_logger(),
                                 "✅ WP%zu/%zu passed (drone %.2fm) → next",
                                 wp_index_ + 1, wps.size(), drone_dist);
+                log_event(std::string("WP ") + std::to_string(wp_index_ + 1) + "/" +
+                          std::to_string(wps.size()) +
+                          (timedout ? " TIMEOUT -> skip" : " reached -> next"));
                 wp_index_++;
                 wp_enter_time_ = now;
             }
@@ -893,6 +973,7 @@ void OffboardMode::control_loop()
     {
         landed_ = true;
         start_offboard_.store(false);
+        log_event("LANDED & disarmed -> idle (flight complete)");
         RCLCPP_INFO(this->get_logger(),
                     "✅ Landed & disarmed. Idle — send OFFBOARD again to fly once more.");
     }
