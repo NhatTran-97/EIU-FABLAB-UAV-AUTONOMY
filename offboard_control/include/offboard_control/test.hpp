@@ -101,6 +101,8 @@ private:
     bool delay_started_;
     uint8_t last_landed_state_;
     int low_batt_count_{0};
+    rclcpp::Time low_batt_since_{0, 0, RCL_ROS_TIME};  // when V first dropped below threshold (0 = not low)
+    double low_batt_hold_sec_{5.0};  // V must stay below threshold this long before emergency land
     // bool start_offboard_;
     std::atomic<bool> start_offboard_{false};
 

@@ -65,8 +65,14 @@ OffboardMode::OffboardMode() : Node("offboard_node"), last_arm_request_(this->no
     this->get_parameter("takeoff_height_", takeoff_height_);
     RCLCPP_INFO(this->get_logger(), "Takeoff height set to: %.2f m", takeoff_height_);
 
-    this->declare_parameter("min_battery_", 14.0);  // 3.5V/cell for 4S — safe low-battery threshold
+    this->declare_parameter("min_battery_", 13.2);  // 3.3V/cell for 4S — real danger zone (14V sags under motor load)
     this->get_parameter("min_battery_", limit_min_battery_);
+
+    // Voltage must stay below min_battery_ continuously for this long before we emergency-land.
+    // Rejects the transient sag during takeoff/climb (high current, recovers in 1-3s) while
+    // still catching a genuinely depleted pack.
+    this->declare_parameter("low_batt_hold_sec", 5.0);
+    this->get_parameter("low_batt_hold_sec", low_batt_hold_sec_);
 
     this->declare_parameter("takeoff_delay_sec", 5.0);
     double delay_sec;
@@ -308,6 +314,7 @@ void OffboardMode::reset_flight_state()
     offboard_engaged_   = false;
     aborted_            = false;
     low_batt_count_     = 0;
+    low_batt_since_     = rclcpp::Time(0, 0, RCL_ROS_TIME);
     flying_mission_     = false;
     wp_index_           = 0;
     arm_lost_           = false;
@@ -382,21 +389,43 @@ void OffboardMode::battery_cb(const sensor_msgs::msg::BatteryState::SharedPtr ms
     }
     battery_valtage_ = v;
 
-    // Only emergency-land while actually armed/flying, and require a few consecutive
-    // low samples so a single voltage sag doesn't latch an irreversible landing.
+    // Only emergency-land while actually armed/flying. Require the voltage to stay below
+    // threshold CONTINUOUSLY for low_batt_hold_sec_ before landing, so a transient sag
+    // (high current during takeoff/climb, which recovers once the throttle eases) does NOT
+    // latch an irreversible landing — only a genuinely depleted pack stays low that long.
     // NOTE: do NOT pre-set landing_started_ here — land_vehicle() sets it itself, and
     // its own `if(landing_started_) return;` guard would otherwise skip the AUTO.LAND.
     if (current_state_.armed && !landing_started_ && v < limit_min_battery_)
     {
-        if (++low_batt_count_ >= 3)
+        const rclcpp::Time now = this->now();
+        if (low_batt_since_.nanoseconds() == 0)
         {
-            RCLCPP_WARN(this->get_logger(), "⚡ Điện áp pin thấp: %.2fV! Tiến hành hạ cánh khẩn cấp.", v);
+            // First sample below threshold: start the sustained-low timer, don't land yet.
+            low_batt_since_ = now;
+            RCLCPP_WARN(this->get_logger(),
+                        "⚠️ Điện áp %.2fV < %.2fV — theo dõi %.1fs trước khi hạ cánh (lọc sụt áp tạm thời).",
+                        v, limit_min_battery_, low_batt_hold_sec_);
+            std::ostringstream bos;
+            bos << "BATTERY: V=" << std::fixed << std::setprecision(2) << v
+                << " dropped below " << limit_min_battery_ << "V — starting "
+                << low_batt_hold_sec_ << "s sustained-low watch";
+            log_event(bos.str());
+        }
+        else if ((now - low_batt_since_).seconds() >= low_batt_hold_sec_)
+        {
+            RCLCPP_WARN(this->get_logger(), "⚡ Điện áp pin thấp BỀN VỮNG: %.2fV! Tiến hành hạ cánh khẩn cấp.", v);
+            std::ostringstream bos;
+            bos << "BATTERY: emergency land — V=" << std::fixed << std::setprecision(2) << v
+                << "V stayed below " << limit_min_battery_ << "V for "
+                << low_batt_hold_sec_ << "s (sustained, not a transient sag)";
+            log_event(bos.str());
             land_vehicle();
         }
     }
     else
     {
-        low_batt_count_ = 0;
+        // Voltage recovered (sag ended) — reset the timer so the next dip starts fresh.
+        low_batt_since_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
     }
 }
 
