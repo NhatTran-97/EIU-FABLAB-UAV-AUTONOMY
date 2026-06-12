@@ -94,7 +94,7 @@ class LoraDrone(Node):
         self.serial_lock = Lock()
         self._reopen_lock = Lock()
         self._stop_event = threading.Event()
-        self.serial_path = os.environ.get('LORA_DRONE_PORT', '/dev/lora_drone')
+        self.serial_path = os.environ.get('LORA_DRONE_PORT', '/dev/lora_ground')
         self.serial_baudrate = int(os.environ.get('LORA_DRONE_BAUD', '9600'))
         # 0.5s = 2 Hz. Safe on the 19.2kbps E32 link (~500 B/s capacity, ~24% used).
         # Override with LORA_DRONE_TELEMETRY_INTERVAL; do not go below ~0.3 (GPS packets
