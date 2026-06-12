@@ -17,31 +17,13 @@ find_package(nav_msgs REQUIRED)
 
 
 
-# add_executable(offboard_node
-#   src/offboard_control.cpp
-# )
+add_executable(offboard_control
+    src/offboard_control.cpp
+    src/carrot_follower.cpp
+    src/setpoint_streamer.cpp
+    src/battery_monitor.cpp)
 
-
-# ament_target_dependencies(offboard_node
-#   rclcpp
-#   geometry_msgs
-#   mavros_msgs
-
-# )
-
-
-# # Install Python script
-# install(PROGRAMS
-#   src/nhi.py
-#   DESTINATION lib/${PROJECT_NAME}
-# )
-
-
-
-add_executable(test_mode
-    src/test.cpp)
-
-ament_target_dependencies(test_mode
+ament_target_dependencies(offboard_control
     rclcpp
     mavros_msgs
     geometry_msgs
@@ -52,27 +34,15 @@ ament_target_dependencies(test_mode
 # pthread_setschedparam (SCHED_FIFO on the setpoint streamer) needs an explicit
 # pthread link on older glibc (Jetson Nano / Ubuntu 18.04).
 find_package(Threads REQUIRED)
-target_link_libraries(test_mode Threads::Threads)
+target_link_libraries(offboard_control Threads::Threads)
 
-target_include_directories(test_mode
+target_include_directories(offboard_control
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)    
 
-
-
-
-
-
-
-
-# target_include_directories(offboard_node
-#   PUBLIC
-#     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/offboard_control>
-#     $<INSTALL_INTERFACE:include/offboard_control>)
-
 install(TARGETS
  # offboard_node
-  test_mode
+  offboard_control
   DESTINATION lib/${PROJECT_NAME}
 )
 
