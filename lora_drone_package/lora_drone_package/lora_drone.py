@@ -68,7 +68,7 @@ class LoraDrone(Node):
         # 0.5s = 2 Hz. Safe on the 19.2kbps E32 link (~500 B/s capacity, ~24% used).
         # Override with LORA_DRONE_TELEMETRY_INTERVAL; do not go below ~0.3 (GPS packets
         # approach the air-rate ceiling). On a 2.4kbps link this must be >=2.0.
-        self.telemetry_interval = max(0.2, float(os.environ.get("LORA_DRONE_TELEMETRY_INTERVAL", "1.0")))
+        self.telemetry_interval = max(0.2, float(os.environ.get("LORA_DRONE_TELEMETRY_INTERVAL", "0.7")))
         self.vel = None
         self.current_mode = "UNKNOWN"
         self.gps_ok = False

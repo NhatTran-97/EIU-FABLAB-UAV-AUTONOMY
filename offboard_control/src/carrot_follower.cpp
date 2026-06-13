@@ -86,12 +86,13 @@ CarrotFollower::Result CarrotFollower::update(double drone_x, double drone_y, do
             r.by_timeout = timedout;
         }
     }
-    else if (carrot_at_wp || timedout)
+    else if (carrot_at_wp)
     {
-        // Intermediate WP: once the carrot flowed through it (fly-through) or on timeout,
-        // advance to the next WP — the carrot keeps moving (no full stop).
+        // Intermediate WP: advance only when the carrot has flowed through it.
+        // Timeout is intentionally NOT used here — every WP must be visited regardless
+        // of how long it takes (avoids skipping far-apart waypoints on large missions).
         r.event      = Event::WAYPOINT_PASSED;
-        r.by_timeout = timedout;
+        r.by_timeout = false;
         ++wp_index_;
     }
     return r;

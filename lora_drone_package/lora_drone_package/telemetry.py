@@ -29,6 +29,8 @@ class TelemetryEncoder:
     def __init__(self, full_refresh_sec=15.0):
         self._last_state = None
         self._last_batt = None
+        self._last_yaw = 0.0
+        self._last_gps_ok = None
         self._last_full_at = 0.0
         self._full_refresh = full_refresh_sec
 
@@ -45,12 +47,27 @@ class TelemetryEncoder:
         # state/battery within _full_refresh seconds.
         force_full = (now - self._last_full_at) >= self._full_refresh
 
-        data = {"hb": 1, "gps_ok": int(bool(gps_ok) and bool(gps_fresh))}
+        data = {"hb": 1}
+
+        # gps_ok: only send on change or full-refresh
+        gps_ok_val = int(bool(gps_ok) and bool(gps_fresh))
+        if force_full or gps_ok_val != self._last_gps_ok:
+            data["gps_ok"] = gps_ok_val
 
         if pose is not None:
-            data["x"] = round(pose.position.x, 2)
-            data["y"] = round(pose.position.y, 2)
-            data["z"] = round(pose.position.z, 2)
+            # 1 decimal = 10 cm resolution — enough for GCS display, saves 1-2 bytes/field
+            data["x"] = round(pose.position.x, 1)
+            data["y"] = round(pose.position.y, 1)
+            data["z"] = round(pose.position.z, 1)
+            # Yaw from quaternion (ENU frame: 0°=East, CCW positive).
+            # Integer degrees saves 2 bytes; ±1° resolution is fine for map display.
+            qx, qy, qz, qw = (pose.orientation.x, pose.orientation.y,
+                               pose.orientation.z, pose.orientation.w)
+            yaw_deg = int(round(math.degrees(
+                math.atan2(2*(qw*qz + qx*qy), 1 - 2*(qy*qy + qz*qz))
+            )))
+            if force_full or abs(yaw_deg - self._last_yaw) >= 1:
+                data["hdg"] = yaw_deg
 
         if gps_fresh and lat is not None and lon is not None and alt is not None:
             data["lat"] = round(lat, 5)
@@ -72,12 +89,16 @@ class TelemetryEncoder:
             if force_full or batt != self._last_batt:
                 data["battery"] = {"percent": batt[0], "voltage": batt[1]}
 
-        return data, (state, batt, force_full, now)
+        return data, (state, batt, data.get("hdg"), data.get("gps_ok"), force_full, now)
 
     def commit(self, token):
         """Advance the change-detection trackers — call ONLY after a successful send."""
-        state, batt, force_full, now = token
+        state, batt, hdg, gps_ok_sent, force_full, now = token
         self._last_state = state
         self._last_batt = batt
+        if hdg is not None:
+            self._last_yaw = hdg
+        if gps_ok_sent is not None:
+            self._last_gps_ok = gps_ok_sent
         if force_full:
             self._last_full_at = now
