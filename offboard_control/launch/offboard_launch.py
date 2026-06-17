@@ -19,6 +19,22 @@ def generate_launch_description():
                 # Jetson host == ~/nhatbot_remote on the laptop via sshfs). Default would be
                 # $HOME/mission_debug.log = /root/... inside the container — invisible on host.
                 'mission_log_file': '/home/drone_ws/mission_debug.log',
+
+                # --- Pre-takeoff EKF gate (see ekf_ready in offboard_control.cpp) ---
+                # Don't arm/climb until the estimator is trustworthy: requires a GPS 3D fix
+                # AND local-z holding within ekf_z_stable_thresh (m) for ekf_z_stable_sec (s).
+                # This is the fix for "takeoff, hover, land — never flies the mission", caused
+                # by arming before the EKF converges. Set ekf_gate_enable False to disable.
+                'ekf_gate_enable': True,
+                'ekf_z_stable_thresh': 0.30,
+                'ekf_z_stable_sec': 3.0,
+                # Altitude-reach timeout after ARM (s). Was a hard-coded 30s; raised to 60s
+                # so a slow-but-fine climb isn't aborted prematurely.
+                'climb_timeout_sec': 60.0,
+                # "Reached altitude" tolerance (m). The drone hovers ~0.2-0.4m below the
+                # commanded altitude (normal position-hold droop), so a 0.1m gate was never
+                # satisfied -> climb, hover short, timeout. 0.5m = real droop + safe margin.
+                'alt_reached_tol': 0.5,
             }],
         )
 

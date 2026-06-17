@@ -68,6 +68,7 @@ ros2 launch lora_drone_package bringup.launch.py \
 | Subscribe | `/mission_path` | `nav_msgs/Path` | Waypoint list — auto-starts a mission flight when idle. z = relative to takeoff ground. **VOLATILE QoS** (ignores latched/old missions at startup). |
 | Subscribe | `/mavros/state` | `mavros_msgs/State` | PX4 mode + armed status |
 | Subscribe | `/mavros/local_position/pose` | `geometry_msgs/PoseStamped` | EKF position |
+| Subscribe | `/mavros/global_position/raw/fix` | `sensor_msgs/NavSatFix` | GPS fix — pre-takeoff EKF gate |
 | Subscribe | `/mavros/battery` | `sensor_msgs/BatteryState` | Voltage (safety) |
 | Subscribe | `/mavros/extended_state` | `mavros_msgs/ExtendedState` | Landed/in-air status |
 | Publish | `/mavros/setpoint_position/local` | `geometry_msgs/PoseStamped` | Position setpoint (20 Hz) |
@@ -80,14 +81,19 @@ ros2 launch lora_drone_package bringup.launch.py \
 
 | Param | Default | Description |
 |---|---|---|
-| `takeoff_height_` | `5.0` m | Takeoff altitude above ground |
+| `takeoff_height_` | `5.0` m | Takeoff altitude for an **OFFBOARD hover**. A **mission** instead takes off to its first waypoint's altitude. |
 | `takeoff_delay_sec` | `5.0` s | Setpoint prime time before entering OFFBOARD |
 | `hover_seconds` | `10.0` s | Hover duration when no mission (≤ 0 = hold until LAND command) |
 | `arm_timeout_sec` | `15.0` s | Abort if ARM not achieved within this time |
+| `climb_timeout_sec` | `60.0` s | Emergency land if takeoff altitude not reached within this time after ARM |
+| `alt_reached_tol` | `0.5` m | "Altitude reached" when `z ≥ target − tol` (matches real hover droop; 0.1 m was unreachable) |
+| `ekf_gate_enable` | `true` | Pre-takeoff EKF gate: require GPS 3D fix + stable local-z before ARM. `false` = arm immediately (bench/GPS-denied) |
+| `ekf_z_stable_thresh` | `0.30` m | local-z must hold within ±this of a reference… |
+| `ekf_z_stable_sec` | `3.0` s | …for this long before the EKF is considered settled |
 | `min_battery_` | `13.2` V | Low-battery threshold (3.3 V/cell, 4S) |
 | `low_batt_hold_sec` | `5.0` s | Voltage must stay below threshold for this long before emergency land |
 | `wp_reach_radius` | `1.5` m | Waypoint reached radius |
-| `wp_timeout_sec` | `30.0` s | Skip waypoint if not reached within this time |
+| `wp_timeout_sec` | `30.0` s | **Final** waypoint only: land if not reached within this time. Intermediate WPs are never skipped by time (every WP is visited). |
 | `cruise_speed` | `2.0` m/s | Carrot advance speed along the mission path |
 | `carrot_lead` | `2.5` m | Max carrot lead distance ahead of the drone |
 | `setpoint_rate_hz` | `20.0` Hz | Setpoint stream rate (must be > 2 Hz for PX4 OFFBOARD) |
@@ -100,15 +106,21 @@ ros2 launch lora_drone_package bringup.launch.py \
 Events are appended to `mission_log_file`:
 
 ```
-STATE: CLIMBING -> MISSION
 MISSION_RX: received 5 waypoints
+EKF gate WAIT: z settling 1.2/3.0s (z=0.05 ref=0.04 drift=0.01m)
+EKF gate passed (GPS 3D fix + stable local-z z=0.05m) -> proceeding to takeoff
 ARMED
+CLIMB: z=2.10/6.00 (gap=3.90m) mode=OFFBOARD armed=1 t=4/60s
 ALTITUDE reached -> deciding mission vs hover
 DECISION: FLY MISSION (5 waypoints)
+MISSION WP1/5: drone(1.2,3.4,6.0) carrot(2.1,4.0,6.0) dist=0.95 mode=OFFBOARD
 WP 1/5 reached -> next
 MISSION COMPLETE at WP5 -> landing
 LANDED & disarmed -> idle
 ```
+
+The `CLIMB:`/`MISSION:` lines are throttled (~2 s); their `mode=` column makes an external
+override (e.g. `POSCTL`) obvious. `EKF gate WAIT:` lines show why takeoff is being held (GPS vs z).
 
 The launch file sets `mission_log_file` to `/home/drone_ws/mission_debug.log` (Docker bind-mount → visible on host and laptop via sshfs).
 
@@ -116,7 +128,8 @@ The launch file sets `mission_log_file` to `/home/drone_ws/mission_debug.log` (D
 
 ## Safety
 
-- **Altitude timeout:** no altitude reached within 30 s after ARM → emergency land.
+- **EKF gate (pre-takeoff):** won't ARM until a fresh GPS 3D fix + stable local-z (`ekf_z_stable_thresh` for `ekf_z_stable_sec`). Prevents the "arm before EKF converges → never reaches altitude → land" failure. Latched so it never re-trips mid-flight. Disable with `ekf_gate_enable:=false`.
+- **Altitude timeout:** no altitude reached within `climb_timeout_sec` (60 s) after ARM → emergency land. "Reached" = within `alt_reached_tol` (0.5 m) of target.
 - **Low battery (debounced):** voltage < `min_battery_` for ≥ `low_batt_hold_sec` continuously → emergency land. Transient sag on takeoff does not trigger.
 - **Stale FCU / pose:** setpoint stream stops; PX4 exits OFFBOARD automatically.
 - **External override:** PX4 leaves OFFBOARD for > 3 s → ABORT → MANUAL.

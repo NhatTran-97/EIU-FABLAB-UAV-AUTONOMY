@@ -2,6 +2,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cstdlib>   // std::getenv — resolve $HOME for the default log path
+#include <cstdio>    // std::snprintf — format detailed progress log lines
 #include <sstream>   // std::ostringstream — format log lines
 #include <iomanip>   // std::setprecision — timestamp / distance formatting
 
@@ -51,6 +52,7 @@
 
 OffboardMode::OffboardMode() : Node("offboard_node"), last_arm_request_(this->now()),
                                                       last_mode_request_(this->now()),
+                                                      last_progress_log_(this->now()),
                                                       takeoff_delay_(rclcpp::Duration::from_seconds(5.0)) ,
                                                       has_armed(false), landing_started_(false), 
                                                       landed_(false),reached_altitude_(false)                                                       
@@ -80,6 +82,23 @@ OffboardMode::OffboardMode() : Node("offboard_node"), last_arm_request_(this->no
 
     this->declare_parameter("arm_timeout_sec", 15.0);
     this->get_parameter("arm_timeout_sec", arm_timeout_sec_);
+
+    this->declare_parameter("climb_timeout_sec", 60.0);
+    this->get_parameter("climb_timeout_sec", climb_timeout_sec_);
+
+    // "Reached altitude" tolerance (m). Real position-hold droop is ~0.2-0.4m, so a tight
+    // 0.1m gate is never satisfied — the drone climbs, hovers just short, and times out.
+    this->declare_parameter("alt_reached_tol", 0.5);
+    this->get_parameter("alt_reached_tol", alt_reached_tol_);
+
+    // Pre-takeoff EKF gate (see ekf_ready / offboard_control.hpp). Tunable from the launch
+    // file; set ekf_gate_enable:=false to fall back to the old "arm immediately" behaviour.
+    this->declare_parameter("ekf_gate_enable", true);
+    this->get_parameter("ekf_gate_enable", ekf_gate_enable_);
+    this->declare_parameter("ekf_z_stable_thresh", 0.30);
+    this->get_parameter("ekf_z_stable_thresh", ekf_z_stable_thresh_);
+    this->declare_parameter("ekf_z_stable_sec", 3.0);
+    this->get_parameter("ekf_z_stable_sec", ekf_z_stable_sec_);
 
     this->declare_parameter("wp_reach_radius", 1.5);
     this->get_parameter("wp_reach_radius", follower_.params.reach_radius);
@@ -154,6 +173,8 @@ OffboardMode::OffboardMode() : Node("offboard_node"), last_arm_request_(this->no
     set_mode_client_ = this->create_client<mavros_msgs::srv::SetMode>("/mavros/set_mode");
     battery_sub_ = this->create_subscription<sensor_msgs::msg::BatteryState>("/mavros/battery", qos_battery, std::bind(&OffboardMode::battery_cb, this, std::placeholders::_1));
     ext_state_sub_ = this->create_subscription<mavros_msgs::msg::ExtendedState>("/mavros/extended_state", 10, std::bind(&OffboardMode::ext_state_cb, this, std::placeholders::_1));
+    // GPS fix for the pre-takeoff EKF gate. MAVROS publishes the raw fix BEST_EFFORT (sensor data).
+    gps_sub_ = this->create_subscription<sensor_msgs::msg::NavSatFix>("/mavros/global_position/raw/fix", qos_pose, std::bind(&OffboardMode::gps_cb, this, std::placeholders::_1));
     
     mode_srv_ = this->create_service<custom_msgs::srv::ModeSignal>("/mode_signal",std::bind(&OffboardMode::on_mode_signal, this, std::placeholders::_1, std::placeholders::_2));
 
@@ -279,6 +300,8 @@ void OffboardMode::reset_flight_state()
     manual_restored_    = false;
     flight_decision_logged_ = false;
     mission_intent_     = false;   // default to plain hover; mission_cb sets it true for a mission
+    ekf_z_ref_set_      = false;   // re-validate the EKF gate (GPS + stable z) for this flight
+    ekf_gate_passed_    = false;   // gate must pass once again before this flight arms
 }
 
 void OffboardMode::pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
@@ -288,6 +311,15 @@ void OffboardMode::pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
     pose_received_ = true;
     // Reached-altitude detection moved into control_loop, where it compares against the
     // RELATIVE target (ground z + takeoff_height_) instead of an absolute z.
+}
+
+void OffboardMode::gps_cb(const sensor_msgs::msg::NavSatFix::SharedPtr msg)
+{
+    // Feed the pre-takeoff EKF gate (ekf_ready). NavSatStatus: NO_FIX=-1, FIX=0, SBAS=1, GBAS=2.
+    // status >= STATUS_FIX means we have at least a 3D fix the EKF can fuse.
+    last_gps_time_ = this->now();
+    gps_received_  = true;
+    gps_fix_ok_    = (msg->status.status >= sensor_msgs::msg::NavSatStatus::STATUS_FIX);
 }
 
 void OffboardMode::on_mode_signal(const std::shared_ptr<custom_msgs::srv::ModeSignal::Request> req, std::shared_ptr<custom_msgs::srv::ModeSignal::Response> res)
@@ -602,6 +634,33 @@ void OffboardMode::control_loop()
     if (!link_ready(now))                // gate: fresh pose/state + connected FCU
         return;
 
+    // Pre-takeoff EKF gate — runs ONCE, only until it passes. CRITICAL: it must NOT run again
+    // after takeoff. local-z legitimately changes while climbing/flying, so re-checking the
+    // z-stability test mid-flight would (and did) bounce us back to WAIT_LINK and hold the
+    // current pose — yanking the climb setpoint and making the drone jerk up/down until PX4
+    // drops OFFBOARD. Latch it: once passed, never gate again this flight.
+    if (!ekf_gate_passed_)
+    {
+        if (!ekf_ready(now))             // gate: GPS 3D fix + stable local-z before takeoff
+        {
+            // Keep priming the setpoint stream with the live pose while we wait on the ground,
+            // so OFFBOARD engages cleanly the moment the estimator is ready. Reflect the wait
+            // in the FSM/telemetry as WAIT_LINK (the pre-takeoff "preparing" state).
+            transition_to(FlightState::WAIT_LINK);
+            geometry_msgs::msg::PoseStamped hold = current_pose_;
+            stream_setpoint(hold);
+            return;
+        }
+        ekf_gate_passed_ = true;
+        {
+            char buf[160];
+            std::snprintf(buf, sizeof(buf),
+                "EKF gate passed (GPS 3D fix + stable local-z z=%.2fm) -> proceeding to takeoff",
+                current_pose_.pose.position.z);
+            log_event(buf);
+        }
+    }
+
     if (prime_during_delay(now))         // hold current pose to prime PX4's setpoint stream
         return;
 
@@ -694,6 +753,71 @@ bool OffboardMode::link_ready(const rclcpp::Time &now)
     return true;
 }
 
+bool OffboardMode::ekf_ready(const rclcpp::Time &now)
+{
+    // Pre-takeoff estimator gate. Returns true only when it is safe to arm + climb:
+    //   (1) a fresh GPS 3D fix, and
+    //   (2) local-z has held within ±ekf_z_stable_thresh_ of a reference for ekf_z_stable_sec_.
+    // Until then we keep the drone on the ground. This is the root-cause fix for the
+    // "takeoff, hover, land — never flies the mission" symptom: arming before the EKF has
+    // converged gives a drifting local-z that never satisfies the reached-altitude test.
+    if (!ekf_gate_enable_)
+        return true;   // gate disabled via param -> behave like before
+
+    // (1) GPS 3D fix, fresh.
+    const bool gps_ok = gps_received_ && gps_fix_ok_ &&
+                        (now - last_gps_time_).seconds() < gps_fresh_sec_;
+    if (!gps_ok)
+    {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                             "🛰️ Waiting for GPS 3D fix before takeoff (EKF gate)...");
+        if ((now - last_progress_log_).seconds() >= 2.0)
+        {
+            last_progress_log_ = now;
+            char buf[160];
+            std::snprintf(buf, sizeof(buf),
+                "EKF gate WAIT: no GPS fix (received=%d fix_ok=%d age=%.1fs)",
+                gps_received_ ? 1 : 0, gps_fix_ok_ ? 1 : 0,
+                gps_received_ ? (now - last_gps_time_).seconds() : -1.0);
+            log_event(buf);
+        }
+        ekf_z_ref_set_ = false;   // restart z-stability once GPS comes good
+        return false;
+    }
+
+    // (2) local-z stability: hold within a band of a reference for a sustained window. A jump
+    // or slow drift beyond the band re-arms the reference + timer, so we only pass once the
+    // estimate is genuinely steady.
+    const double z = current_pose_.pose.position.z;
+    if (!ekf_z_ref_set_ || std::fabs(z - ekf_z_ref_) > ekf_z_stable_thresh_)
+    {
+        ekf_z_ref_         = z;
+        ekf_z_stable_since_ = now;
+        ekf_z_ref_set_     = true;
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                             "📈 Waiting for EKF local-z to stabilise before takeoff...");
+        return false;
+    }
+    if ((now - ekf_z_stable_since_).seconds() < ekf_z_stable_sec_)
+    {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                             "📈 EKF settling: local-z stable %.1f/%.1fs...",
+                             (now - ekf_z_stable_since_).seconds(), ekf_z_stable_sec_);
+        if ((now - last_progress_log_).seconds() >= 1.0)
+        {
+            last_progress_log_ = now;
+            char buf[160];
+            std::snprintf(buf, sizeof(buf),
+                "EKF gate WAIT: z settling %.1f/%.1fs (z=%.2f ref=%.2f drift=%.2fm)",
+                (now - ekf_z_stable_since_).seconds(), ekf_z_stable_sec_,
+                z, ekf_z_ref_, std::fabs(z - ekf_z_ref_));
+            log_event(buf);
+        }
+        return false;
+    }
+    return true;
+}
+
 bool OffboardMode::prime_during_delay(const rclcpp::Time &now)
 {
     // During the delay window: hold the CURRENT pose to prime the stream (publishing the
@@ -714,10 +838,24 @@ void OffboardMode::capture_takeoff_target(const rclcpp::Time &now)
     // RELATIVE altitude => robust no matter where the EKF local-z origin sits.
     if (!takeoff_target_set_)
     {
+        // Climb height: for a MISSION, take off straight to the first waypoint's altitude so
+        // there is no 5m-vs-mission-altitude mismatch (the carrot used to pull the drone up
+        // the extra metre after takeoff). For a plain OFFBOARD hover, use takeoff_height_.
+        double climb_height = takeoff_height_;
+        {
+            std::lock_guard<std::mutex> lk(mission_mtx_);
+            if (mission_intent_ && !mission_wps_.empty())
+            {
+                const double wp0_z = mission_wps_.front().pose.position.z;
+                if (std::isfinite(wp0_z) && wp0_z > 0.5)   // sane positive altitude only
+                    climb_height = wp0_z;
+            }
+        }
+
         ground_z_ = current_pose_.pose.position.z;   // WP z values are relative to this
         target_pose_.pose.position.x = current_pose_.pose.position.x;
         target_pose_.pose.position.y = current_pose_.pose.position.y;
-        target_pose_.pose.position.z = ground_z_ + takeoff_height_;
+        target_pose_.pose.position.z = ground_z_ + climb_height;
         target_pose_.pose.orientation = current_pose_.pose.orientation;
         takeoff_target_set_ = true;
         arm_attempt_start_ = now;
@@ -725,7 +863,7 @@ void OffboardMode::capture_takeoff_target(const rclcpp::Time &now)
         RCLCPP_INFO(this->get_logger(),
                     "🎯 Takeoff target: x=%.2f y=%.2f z=%.2f (ground z=%.2f + %.2f m)",
                     target_pose_.pose.position.x, target_pose_.pose.position.y,
-                    target_pose_.pose.position.z, current_pose_.pose.position.z, takeoff_height_);
+                    target_pose_.pose.position.z, current_pose_.pose.position.z, climb_height);
     }
 }
 
@@ -844,9 +982,12 @@ bool OffboardMode::check_arm_watchdogs(const rclcpp::Time &now)
 
 bool OffboardMode::check_altitude_progress(const rclcpp::Time &now)
 {
-    // Reached-altitude detection against the RELATIVE target.
+    // Reached-altitude detection against the RELATIVE target. Tolerance is alt_reached_tol_
+    // (param), NOT a tight 0.1m: a real multirotor settles ~0.2-0.4m below the commanded
+    // altitude in steady state (normal PX4 position-hold droop). A 0.1m gate is unreachable —
+    // the drone climbs, hovers just short of target, and times out ("flies up then sits there").
     if (has_armed && !reached_altitude_ &&
-        current_pose_.pose.position.z >= target_pose_.pose.position.z - 0.1)
+        current_pose_.pose.position.z >= target_pose_.pose.position.z - alt_reached_tol_)
     {
         reached_altitude_ = true;
         altitude_reach_time_ = now;
@@ -854,13 +995,32 @@ bool OffboardMode::check_altitude_progress(const rclcpp::Time &now)
         log_event("ALTITUDE reached -> deciding mission vs hover");
     }
 
+    // Detailed climb progress (throttled to the file): see whether we are actually rising,
+    // and whether PX4 is still in OFFBOARD. A flat z here = not climbing; a mode != OFFBOARD =
+    // PX4 dropped us. Both explain a climb timeout / "won't fly" without guessing.
+    if (has_armed && !reached_altitude_ && !landing_started_ &&
+        (now - last_progress_log_).seconds() >= 2.0)
+    {
+        last_progress_log_ = now;
+        char buf[180];
+        std::snprintf(buf, sizeof(buf),
+            "CLIMB: z=%.2f/%.2f (gap=%.2fm) mode=%s armed=%d t=%.0f/%.0fs",
+            current_pose_.pose.position.z, target_pose_.pose.position.z,
+            target_pose_.pose.position.z - current_pose_.pose.position.z,
+            current_state_.mode.c_str(), current_state_.armed ? 1 : 0,
+            (now - arm_time).seconds(), climb_timeout_sec_);
+        log_event(buf);
+    }
+
     // Altitude timeout (after ARM): emergency-land if we never climb.
     if (has_armed && !reached_altitude_ && !landing_started_ &&
-        (now - arm_time) > rclcpp::Duration(30s))
+        (now - arm_time) > rclcpp::Duration::from_seconds(climb_timeout_sec_))
     {
-        RCLCPP_ERROR(this->get_logger(),
-                     "🕒 Timeout: altitude not reached within 30s after ARM. Landing...");
-        log_event("ABORT: altitude not reached within 30s after ARM -> emergency land");
+        RCLCPP_WARN(this->get_logger(),
+                     "🕒 Timeout: altitude not reached within %.0fs after ARM. Landing...",
+                     climb_timeout_sec_);
+        log_event("ABORT: altitude not reached within " +
+                  std::to_string(static_cast<int>(climb_timeout_sec_)) + "s after ARM -> emergency land");
         land_vehicle();
         return true;
     }
@@ -954,6 +1114,22 @@ bool OffboardMode::fly_active_mission(const rclcpp::Time &now)
         current_pose_.pose.position.y,
         current_pose_.pose.position.z,
         elapsed);
+
+    // Detailed mission progress (throttled to the file). Shows the drone pose vs the carrot
+    // setpoint, distance, active WP, and PX4 mode — the data needed to tell "not moving" from
+    // "carrot not advancing" from "PX4 left OFFBOARD".
+    if ((now - last_progress_log_).seconds() >= 2.0)
+    {
+        last_progress_log_ = now;
+        char buf[200];
+        std::snprintf(buf, sizeof(buf),
+            "MISSION WP%zu/%zu: drone(%.1f,%.1f,%.1f) carrot(%.1f,%.1f,%.1f) dist=%.2f mode=%s",
+            r.wp_index + 1, r.wp_count,
+            current_pose_.pose.position.x, current_pose_.pose.position.y,
+            current_pose_.pose.position.z, r.x, r.y, r.z, r.drone_dist,
+            current_state_.mode.c_str());
+        log_event(buf);
+    }
 
     // Publish the carrot as the position setpoint.
     target_pose_.pose.position.x    = r.x;

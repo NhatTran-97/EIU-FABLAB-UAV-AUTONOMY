@@ -9,6 +9,7 @@
 #include <rclcpp/qos.hpp> 
 #include "rmw/qos_profiles.h"
 #include <sensor_msgs/msg/battery_state.hpp>
+#include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <mavros_msgs/msg/extended_state.hpp>
 #include <custom_msgs/srv/mode_signal.hpp>
 #include <nav_msgs/msg/path.hpp>
@@ -44,6 +45,7 @@ private:
     void pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
     void battery_cb(const sensor_msgs::msg::BatteryState::SharedPtr msg);
     void ext_state_cb(const mavros_msgs::msg::ExtendedState::SharedPtr msg);
+    void gps_cb(const sensor_msgs::msg::NavSatFix::SharedPtr msg);       // GPS fix for the pre-takeoff EKF gate
     void on_mode_signal(const std::shared_ptr<custom_msgs::srv::ModeSignal::Request> req, std::shared_ptr<custom_msgs::srv::ModeSignal::Response> res); 
     
 
@@ -76,6 +78,7 @@ private:
     bool handle_inactive();                              // idle/finished/aborted: stop stream, maybe restore MANUAL
     bool begin_takeoff_delay(const rclcpp::Time &now);   // phase 0: start the takeoff-delay window
     bool link_ready(const rclcpp::Time &now);            // gate: fresh pose/state + connected FCU
+    bool ekf_ready(const rclcpp::Time &now);             // gate: GPS 3D fix + stable local-z before takeoff
     bool prime_during_delay(const rclcpp::Time &now);    // hold current pose to prime PX4's setpoint stream
     void capture_takeoff_target(const rclcpp::Time &now);// latch takeoff target once (ground_z_ + height)
     bool check_external_override(const rclcpp::Time &now);// PX4 left OFFBOARD after stable -> abort
@@ -109,6 +112,7 @@ private:
 
 
     rclcpp::Subscription<mavros_msgs::msg::ExtendedState>::SharedPtr ext_state_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr gps_sub_;
 
     rclcpp::Service<custom_msgs::srv::ModeSignal>::SharedPtr mode_srv_;
 
@@ -125,6 +129,7 @@ private:
     rclcpp::Time last_mode_request_;
     rclcpp::Time last_pose_time_;
     rclcpp::Time last_state_time_;
+    rclcpp::Time last_progress_log_;   // throttle for the detailed CLIMB/MISSION progress file log
     rclcpp::Time takeoff_delay_start_time_;
     rclcpp::Duration takeoff_delay_;
     
@@ -157,7 +162,31 @@ private:
     rclcpp::Time offboard_engage_time_; // when PX4 first confirmed OFFBOARD (for override debounce)
     double hover_seconds_{10.0};       // hover duration; <=0 => hold indefinitely until LAND
     double arm_timeout_sec_{15.0};     // abort if not armed within this window
+    double climb_timeout_sec_{60.0};   // abort if altitude not reached within this window
+    double alt_reached_tol_{0.5};      // "reached altitude" when within this (m) of target —
+                                       // matches real position-hold droop (~0.2-0.4m) + margin, not 0.1m
     double offboard_stable_sec_{3.0};  // min seconds in OFFBOARD before a revert is "external override"
+
+    // --- Pre-takeoff EKF gate: don't arm/climb until the estimator is trustworthy ----------
+    // Symptom this fixes: at field start-up the EKF local position has not converged, so
+    // /mavros/local_position/pose reports a bogus/drifting z. The drone then arms, "hovers",
+    // and never satisfies the reached-altitude test -> climb timeout -> emergency land,
+    // looking like it refuses to fly the mission. We gate ARM on (1) a GPS 3D fix and
+    // (2) local-z holding within a band for a sustained window (EKF settled).
+    bool   ekf_gate_enable_{true};       // master switch (param) — false = skip the gate entirely
+    double gps_fresh_sec_{2.0};          // a fix older than this counts as "no GPS"
+    double ekf_z_stable_thresh_{0.30};   // local-z must stay within ±this (m) of a reference
+    double ekf_z_stable_sec_{3.0};       // ...for this long (s) before we call the EKF settled
+
+    bool        gps_received_{false};    // at least one NavSatFix seen
+    bool        gps_fix_ok_{false};      // last fix had status >= STATUS_FIX (3D-ish)
+    rclcpp::Time last_gps_time_;         // freshness of the last fix
+    bool        ekf_z_ref_set_{false};   // z-stability reference captured
+    double      ekf_z_ref_{0.0};         // reference local-z the stability band is measured from
+    rclcpp::Time ekf_z_stable_since_;    // when local-z last (re)entered the band
+    bool        ekf_gate_passed_{false}; // latched once the gate passes — STOP gating after takeoff
+                                         // (z legitimately moves while climbing/flying, so the
+                                         //  stability test must NOT run again mid-flight)
 
     // --- dedicated setpoint streamer (own thread @ >2Hz, see setpoint_streamer.hpp). Owns the
     //     thread, RT priority, target mutex and heartbeat; the node just feeds it a target. ---
