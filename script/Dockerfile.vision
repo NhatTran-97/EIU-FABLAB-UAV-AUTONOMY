@@ -1,0 +1,55 @@
+# Base image từ NVIDIA Jetson (L4T r32.7.1, đã hỗ trợ CUDA, TensorRT, ROS2 Humble)
+FROM fablab_drone_vision_01:latest
+LABEL maintainer="eiu_fablab01"
+
+# Thiết lập môi trường không tương tác
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /home
+
+# Cài thêm các gói hệ thống cần thiết
+RUN apt-get update && apt-get install -y \
+    apt-utils \
+    python3-pip \
+    nano \
+    gedit \
+    gcc-8 g++-8 \
+    net-tools \
+    usbutils \
+    iputils-ping \
+    cmake \
+    pkg-config \
+    libgtk2.0-dev \
+    libopenmpi-dev \
+    libomp-dev \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    dbus-x11 \
+    git \
+    libxml2-dev \
+    libxslt-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Cài các thư viện Python cần thiết (dành cho training hoặc vision)
+RUN pip3 install --no-cache-dir \
+    'pillow<7' \
+    'Cython<3' \
+    'lxml==5.2.0' \
+    numpy scipy asyncio protobuf \
+    pyserial transforms3d websocket-client \
+    matplotlib jetson-stats \
+    grpcio future \
+    stereovision
+
+# Cài đặt PyTorch cho Jetson (đã build sẵn theo JetPack)
+RUN wget https://developer.download.nvidia.com/compute/redist/jp/v461/pytorch/torch-1.11.0a0+17540c5+nv22.01-cp36-cp36m-linux_aarch64.whl && \
+    pip3 install torch-1.11.0a0+17540c5+nv22.01-cp36-cp36m-linux_aarch64.whl && \
+    rm torch-1.11.0a0+17540c5+nv22.01-cp36-cp36m-linux_aarch64.whl
+    
+RUN echo "source /opt/ros/humble/install/setup.bash" >> /root/.bashrc && \
+    echo "if [ -f /home/drone_ws/install/setup.bash ]; then source /home/drone_ws/install/setup.bash; fi" >> /root/.bashrc
+
+ENV CC=/usr/bin/gcc-8
+ENV CXX=/usr/bin/g++-8
+
+# CMD mặc định vào bash
+CMD ["bash"]
