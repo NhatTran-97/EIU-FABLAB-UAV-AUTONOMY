@@ -1,0 +1,20 @@
+d435i_driver:
+  ros__parameters:
+    # Stream config
+    width: 848
+    height: 480
+    fps: 30
+    enable_emitter: false
+    auto_exposure: true
+
+    # IMU rates (D435i supports: accel 63/200, gyro 200/400)
+    accel_rate: 200
+    gyro_rate: 200
+
+    # Skip initial frames while IMU + auto-exposure stabilize
+    warmup_frames: 30
+
+    # Topic names (OpenVINS default)
+    topic_cam0: "/cam0/image_raw"
+    topic_cam1: "/cam1/image_raw"
+    topic_imu: "/imu0"
