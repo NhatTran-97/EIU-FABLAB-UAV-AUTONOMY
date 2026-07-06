@@ -1,0 +1,10 @@
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="lora_drone", MODE="0660", GROUP="dialout"
+
+# LoRa command link (Silicon Labs CP210x, serial 0001)  ->  /dev/lora_ground
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="0001", SYMLINK+="lora_ground", MODE="0660", GROUP="dialout"
+
+# MAVLink telemetry radio (FTDI FT231X, serial D30JUEQN)  ->  /dev/lora_telem
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6015", ATTRS{serial}=="D30JUEQN", SYMLINK+="lora_telem", MODE="0660", GROUP="dialout"
+
+
