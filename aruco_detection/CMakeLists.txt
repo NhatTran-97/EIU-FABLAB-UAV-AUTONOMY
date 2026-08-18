@@ -7,9 +7,30 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
-# uncomment the following section in order to fill in
-# further dependencies manually.
-# find_package(<dependency> REQUIRED)
+# ament_cmake_python la macro dung TRONG package ament_cmake de cai module
+# python cho import duoc. Build type van la ament_cmake, khong phai ament_python.
+find_package(ament_cmake_python REQUIRED)
+
+# Cai package python aruco_detection/ -> import duoc:
+#   from aruco_detection.detector import MarkerDetector
+ament_python_install_package(${PROJECT_NAME})
+
+# Node chay duoc: ros2 run aruco_detection aruco_node.py
+install(PROGRAMS
+  aruco_detection/aruco_node.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+# File calib phai nam trong share/ vi node tim no qua
+# get_package_share_directory("aruco_detection").
+install(FILES
+  aruco_detection/calib_data_mono.json
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME}
+)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
