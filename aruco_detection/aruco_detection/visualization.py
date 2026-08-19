@@ -1,10 +1,10 @@
-"""Ve overlay debug len frame.
+"""Debug overlay drawing.
 
-Quy uoc mau (BGR):
-    xanh la  - he CAMERA (tvec tho, thu dung cho dieu khien)
-    vang     - he MARKER (chi de xem, phu thuoc rvec)
-    cam      - canh bao
-    xanh duong nhat - thong ke thoi gian
+Colour convention (BGR):
+    green  - CAMERA frame (raw tvec, the values a controller should use)
+    yellow - MARKER frame (inspection only, depends on rvec)
+    orange - warnings
+    cyan   - timing statistics
 """
 import cv2
 import cv2.aruco as aruco
@@ -30,7 +30,7 @@ def _put(frame, text, y, color):
 
 
 def draw_markers(frame, detections):
-    """Ve vien marker va o vuong do o goc 0 (goc mang dau -X, +Y)."""
+    """Outline each marker and mark corner 0 (the -X, +Y corner) in red."""
     if not detections:
         return
     corners = [d.corners.reshape(1, 4, 2).astype(np.float32) for d in detections]
@@ -40,7 +40,7 @@ def draw_markers(frame, detections):
 
 def draw_detection(frame, det, camera_matrix, dist_coeffs, marker_size,
                    y=30, ambiguity_warn=0.7, to_cm=100.0, show_marker_frame=True):
-    """Ve truc + so lieu cua mot marker. Tra ve y cho khoi tiep theo."""
+    """Draw axes and readouts for one marker. Returns the next free y."""
     cv2.drawFrameAxes(frame, camera_matrix, dist_coeffs,
                       det.rvec, det.tvec, marker_size * 0.5)
 
@@ -59,18 +59,18 @@ def draw_detection(frame, det, camera_matrix, dist_coeffs, marker_size,
                         f"alt={cam_alt:.1f} cm", y, YELLOW)
 
     if det.ambiguity is not None and det.ambiguity > ambiguity_warn:
-        y = _put(frame, f"! goc xoay khong tin cay ({det.ambiguity:.2f})", y, ORANGE)
+        y = _put(frame, f"! rotation unreliable ({det.ambiguity:.2f})", y, ORANGE)
 
     return y + 10
 
 
 def draw_no_marker(frame, y=30):
-    return _put(frame, "Khong thay marker", y, RED)
+    return _put(frame, "No marker", y, RED)
 
 
 def draw_stats(frame, fps, frame_ms, detect_ms, ssr_ms=None, use_ssr=False,
                detected=None, total=None):
-    """Ve khoi thong ke o day frame."""
+    """Draw the timing block at the bottom of the frame."""
     h = frame.shape[0]
     lines = [f"FPS: {fps:.1f}  |  frame: {frame_ms:.1f}ms"]
     if ssr_ms is not None:

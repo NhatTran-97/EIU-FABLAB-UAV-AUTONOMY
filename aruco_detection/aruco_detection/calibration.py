@@ -1,31 +1,31 @@
-"""Doc va scale intrinsic camera."""
+"""Camera intrinsic loading and resolution fitting."""
 import json
 
 import numpy as np
 
 
 def parse_size(text):
-    """'640x480' -> (640, 480). Chuoi rong -> None."""
+    """'640x480' -> (640, 480). Empty string -> None."""
     if not text:
         return None
     try:
         w, h = str(text).lower().split("x")
         return int(w), int(h)
     except ValueError:
-        raise RuntimeError(f"Kich thuoc phai co dang WxH, vd 640x480 (nhan: {text})")
+        raise RuntimeError(f"Size must be WxH, e.g. 640x480 (got: {text})")
 
 
 def load_calibration(path, side, override_size=None):
-    """Tra ve (camera_matrix, dist_coeffs, calib_size).
+    """Return (camera_matrix, dist_coeffs, calib_size).
 
-    Do phan giai luc calib la BAT BUOC. Thieu no thi khong biet ma tran co dung
-    thang do cho do phan giai dang chay hay khong, va moi khoang cach se sai
-    theo dung ti le do ma van trong hoan toan hop ly.
+    The calibration resolution is MANDATORY. Without it we cannot tell whether
+    the matrix matches the resolution we are running at, and every distance
+    would be off by exactly that ratio while still looking perfectly plausible.
     """
     with open(path) as f:
         data = json.load(f)
     if side not in data:
-        raise RuntimeError(f"File calib {path} khong co entry '{side}'")
+        raise RuntimeError(f"Calibration file {path} has no '{side}' entry")
 
     camera_matrix = np.array(data[side]["matrix"], dtype=np.float64)
     dist_coeffs = np.array(data[side]["distortion"], dtype=np.float64).reshape(-1, 1)
@@ -38,14 +38,14 @@ def load_calibration(path, side, override_size=None):
     if not (w and h):
         cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
         raise RuntimeError(
-            f"File calib {path} [{side}] khong ghi image_width/image_height. "
-            f"Suy doan tu cx={cx:.1f} cy={cy:.1f}: khoang {cx * 2:.0f}x{cy * 2:.0f}. "
-            f"Ghi vao JSON hoac dat tham so calib_size.")
+            f"Calibration file {path} [{side}] has no image_width/image_height. "
+            f"Guessing from cx={cx:.1f} cy={cy:.1f}: around {cx * 2:.0f}x{cy * 2:.0f}. "
+            f"Write it into the JSON or set the calib_size parameter.")
     return camera_matrix, dist_coeffs, (int(w), int(h))
 
 
 def fit_camera_matrix(camera_matrix, calib_size, frame_size):
-    """Scale intrinsic tu do phan giai luc calib sang do phan giai luc chay."""
+    """Scale intrinsics from the calibration resolution to the running one."""
     cw, ch = calib_size
     fw, fh = frame_size
     if (cw, ch) == (fw, fh):
@@ -54,8 +54,9 @@ def fit_camera_matrix(camera_matrix, calib_size, frame_size):
     sx, sy = fw / cw, fh / ch
     if abs(sx - sy) > 0.01:
         raise RuntimeError(
-            f"Ti le khung hinh khac nhau (sx={sx:.3f} sy={sy:.3f}): camera dang "
-            f"crop chu khong thu nho nen khong the scale dung. Calib lai o {fw}x{fh}.")
+            f"Aspect ratio mismatch (sx={sx:.3f} sy={sy:.3f}): the camera is "
+            f"cropping rather than scaling, so the intrinsics cannot be scaled "
+            f"correctly. Recalibrate at {fw}x{fh}.")
 
     scaled = camera_matrix.copy()
     scaled[0, 0] *= sx

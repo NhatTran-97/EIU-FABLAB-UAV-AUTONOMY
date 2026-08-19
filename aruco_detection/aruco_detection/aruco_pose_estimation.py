@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""Detect ArUco marker + uoc luong pose, kem SSR, do delay, logging.
+"""Standalone ArUco detection + pose estimation, with SSR, timing and logging.
 
-Ban nay danh cho muc dich HOC + HIEU pipeline computer vision cho landing:
-  - SSR (Single-Scale Retinex): chong bong do, giong tien xu ly cua bai bao
-  - Do perception delay va FPS: hieu chi phi tinh toan tung khoi
-  - Ambiguity detection: hieu khi nao pose xoay khong tin duoc
-  - Logging CSV (tuy chon): xem lai du lieu sau khi chay
+A learning/debugging tool for the landing perception pipeline:
+  - SSR (Single-Scale Retinex): shadow suppression, as in the reference paper
+  - Perception delay and FPS: shows the cost of each stage
+  - Ambiguity detection: shows when the pose rotation cannot be trusted
+  - Optional CSV logging: replay the data after a run
 
-Chay co ban:
-    python3 aruco_pose_estimation_full.py --marker-size 26.7
+Basic run:
+    python3 aruco_pose_estimation.py --marker-size 26.7
 
-Bat SSR de thay tac dung chong bong:
-    python3 aruco_pose_estimation_full.py --marker-size 26.7 --ssr
+Enable SSR to see the shadow suppression:
+    python3 aruco_pose_estimation.py --marker-size 26.7 --ssr
 
-Ghi log ra CSV de xem lai:
-    python3 aruco_pose_estimation_full.py --marker-size 26.7 --log run1.csv
+Log to CSV for later review:
+    python3 aruco_pose_estimation.py --marker-size 26.7 --log run1.csv
 
-Phim tat khi dang chay:
-    q = thoat
-    s = bat/tat SSR (so sanh truc tiep co/khong SSR)
-    d = bat/tat hien thi anh SSR o cua so phu
+Hotkeys while running:
+    q = quit
+    s = toggle SSR (direct A/B comparison)
+    d = toggle the SSR preview window
 """
 import argparse
 import csv
@@ -35,18 +35,18 @@ import numpy as np
 
 DEFAULT_CALIB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),"aruco_detection","calib_data_mono.json",)
 
-# Doi sang 6x6 1000 de khop voi marker ban da generate.
-# De test nhanh voi marker 4x4 in san thi doi lai "DICT_4X4_50".
+# Switch to 6x6 1000 to match a generated marker.
+# For a quick test with a printed 4x4 marker keep "DICT_4X4_50".
 DEFAULT_DICT = "DICT_4X4_50"
 
 DEFAULT_MARKER_SIZE = 26.7
 
-# Ti le sai so giua 2 nghiem PnP. Cang gan 1.0 = 2 nghiem cang giong nhau
-# -> goc xoay de bi lat. Tren nguong nay thi canh bao tren man hinh.
+# Error ratio between the two PnP solutions. Closer to 1.0 means the two are
+# harder to tell apart, so the rotation flips easily. Above this we warn.
 AMBIGUITY_WARN_RATIO = 0.7
 
-# He so lam muot pose (low-pass). 1.0 = khong loc, cang nho cang muot nhung tre.
-# Chi loc rat nhe o day; loc manh de cho estimation (LKF) lo sau nay.
+# Pose low-pass coefficient. 1.0 = no filtering; smaller is smoother but lags.
+# Only light smoothing here; heavy filtering belongs in the estimator (LKF).
 LPF_ALPHA = 0.6
 
 
@@ -54,17 +54,17 @@ LPF_ALPHA = 0.6
 #  CALIBRATION
 # ============================================================
 def load_calibration(path, side, override_size=None):
-    """Doc intrinsic + do phan giai luc calib.
+    """Read intrinsics plus the calibration resolution.
 
-    Do phan giai luc calib la thong tin BAT BUOC: fx, fy, cx, cy deu ti le
-    thuan voi kich thuoc anh, nen neu khong biet no thi khong the kiem tra
-    ma tran co dung cho do phan giai dang chay hay khong. Thieu -> dung han,
-    khong chay tiep voi thang do khong xac dinh.
+    The calibration resolution is MANDATORY: fx, fy, cx, cy all scale with
+    image size, so without it we cannot check whether the matrix matches the
+    resolution we are running at. Missing -> stop, rather than run on with an
+    undefined scale.
     """
     with open(path) as f:
         data = json.load(f)
     if side not in data:
-        raise SystemExit(f"File calib {path} khong co entry '{side}'")
+        raise SystemExit(f"Calibration file {path} has no '{side}' entry")
     camera_matrix = np.array(data[side]["matrix"], dtype=np.float64)
     dist_coeffs = np.array(data[side]["distortion"], dtype=np.float64).reshape(-1, 1)
 
@@ -76,26 +76,26 @@ def load_calibration(path, side, override_size=None):
     if not (w and h):
         cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
         raise SystemExit(
-            f"\n!! File calib {path} khong ghi image_width/image_height.\n"
-            f"!! Khong biet no duoc calib o do phan giai nao -> moi khoang cach\n"
-            f"!! se sai theo dung ti le do, ma van trong hop ly. Dung tai day.\n"
+            f"\n!! Calibration file {path} has no image_width/image_height.\n"
+            f"!! Its calibration resolution is unknown, so every distance would be\n"
+            f"!! off by exactly that ratio while still looking plausible. Stopping.\n"
             f"!!\n"
             f"!! Goi y tu cx={cx:.1f} cy={cy:.1f} (diem chinh luon gan tam anh):\n"
-            f"!!   do phan giai luc calib vao khoang {cx * 2:.0f}x{cy * 2:.0f}\n"
-            f"!! Day CHI la suy doan. Xac dinh dut diem bang 1 trong 2 cach:\n"
-            f"!!   1) Calib lai va ghi kem do phan giai (chac chan nhat), hoac\n"
-            f"!!   2) Do thuoc 1 lan:  W_calib = (z_hien_thi / z_do_thuoc) * W_dang_chay\n"
+            f"!!   calibration resolution is roughly {cx * 2:.0f}x{cy * 2:.0f}\n"
+            f"!! This is ONLY a guess. Settle it one of two ways:\n"
+            f"!!   1) Recalibrate and record the resolution (most reliable), or\n"
+            f"!!   2) One ruler measurement: W_calib = (z_shown / z_measured) * W_running\n"
             f"!!\n"
-            f"!! Co so roi thi ghi vao JSON:  \"image_width\": W, \"image_height\": H\n"
-            f"!! hoac chay tam voi:  --calib-size WxH\n")
+            f"!! Once known, write it into the JSON:  \"image_width\": W, \"image_height\": H\n"
+            f"!! or run temporarily with:  --calib-size WxH\n")
     return camera_matrix, dist_coeffs, (int(w), int(h))
 
 
 def fit_camera_matrix(camera_matrix, calib_size, frame_size):
-    """Scale intrinsic tu do phan giai luc calib sang do phan giai luc chay.
+    """Scale intrinsics from the calibration resolution to the running one.
 
-    fx, fy, cx, cy deu ti le thuan voi kich thuoc anh. Neu bo qua buoc nay,
-    moi khoang cach se sai theo dung ti le do phan giai.
+    fx, fy, cx, cy all scale with image size. Skipping this makes every
+    distance wrong by exactly the resolution ratio.
     """
     cw, ch = calib_size
     fw, fh = frame_size
@@ -103,13 +103,13 @@ def fit_camera_matrix(camera_matrix, calib_size, frame_size):
         return camera_matrix
 
     sx, sy = fw / cw, fh / ch
-    print(f"!! Do phan giai lech: calib {cw}x{ch} vs dang chay {fw}x{fh}")
+    print(f"!! Resolution mismatch: calibrated {cw}x{ch} vs running {fw}x{fh}")
     if abs(sx - sy) > 0.01:
         raise SystemExit(
             f"!! TI LE KHUNG HINH KHAC NHAU (sx={sx:.3f}, sy={sy:.3f}).\n"
-            f"!! Camera dang crop chu khong phai thu nho -> KHONG the scale dung.\n"
-            f"!! Hay calib lai o dung do phan giai se dung khi chay.")
-    print(f"!! Da scale intrinsic theo he so {sx:.3f}")
+            f"!! The camera is cropping rather than scaling -> intrinsics CANNOT be\n"
+            f"!! scaled correctly. Recalibrate at the resolution you will run at.")
+    print(f"!! Intrinsics scaled by {sx:.3f}")
 
     scaled = camera_matrix.copy()
     scaled[0, 0] *= sx
@@ -120,37 +120,36 @@ def fit_camera_matrix(camera_matrix, calib_size, frame_size):
 
 
 # ============================================================
-#  SSR - Single Scale Retinex (chong bong do)
+#  SSR - Single Scale Retinex (shadow suppression)
 # ============================================================
 def ssr(gray, sigma=100.0):
-    """Single-Scale Retinex 
+    """Single-Scale Retinex.
 
-    Nguyen ly: anh = reflectance x illumination. Illumination la thanh phan
-    thay doi cham (bong do, gradient sang). SSR tach reflectance (thong tin
-    marker) ra khoi illumination.
+    Principle: image = reflectance x illumination. Illumination is the slowly
+    varying part (shadows, brightness gradients). SSR separates reflectance
+    (the marker information) from it.
 
-    QUAN TRONG
-      1) LOG TRUOC:  img = log(I)
-      2) BLUR trong log-domain:  blur = G * log(I)
-      3) TRU:  retinex = log(I) - G*log(I)
-    sigma = 10 la gia tri tac gia dung cung (camera Arducam 800x600). Neu
-    camera cua ban do phan giai khac nhieu thi co the chinh nhe, nhung khong
-    lon nhu 100.
+    IMPORTANT, in this order:
+      1) LOG FIRST:  img = log(I)
+      2) BLUR in the log domain:  blur = G * log(I)
+      3) SUBTRACT:  retinex = log(I) - G*log(I)
+    sigma = 10 is the value used in the reference paper (Arducam 800x600). A
+    very different resolution may need a small adjustment, but nothing like 100.
     """
-    img = gray.astype(np.float32) + 1.0            # +1 tranh log(0)
-    cv2.log(img, img)                              # 1) LOG TRUOC (in-place)
-    # ksize tinh tu sigma dung cong thuc cua tac gia (bat le bang |1)
+    img = gray.astype(np.float32) + 1.0            # +1 avoids log(0)
+    cv2.log(img, img)                              # 1) LOG FIRST (in-place)
+    # ksize derived from sigma using the paper's formula (forced odd with |1)
     ksize = int(round((sigma - 0.8) / 0.15 + 2.0)) | 1
     blur = cv2.GaussianBlur(img, (ksize, ksize), sigma, sigmaY=sigma, borderType=cv2.BORDER_REPLICATE)  # 2) blur log-domain
-    retinex = img - blur                           # 3) tru trong log-domain
+    retinex = img - blur                           # 3) subtract in the log domain
     out = cv2.normalize(retinex, None, 0, 255, cv2.NORM_MINMAX)
     return out.astype(np.uint8)
 
 # ============================================================
-#  DETECTOR (tuong thich OpenCV cu/moi)
+#  DETECTOR (old/new OpenCV compatible)
 # ============================================================
 def make_detector(dict_id):
-    """Tra ve ham detect(gray) -> (corners, ids, rejected)."""
+    """Return a detect(gray) -> (corners, ids, rejected) callable."""
     if hasattr(aruco, "ArucoDetector"):
         dictionary = aruco.getPredefinedDictionary(dict_id)
         detector = aruco.ArucoDetector(dictionary, aruco.DetectorParameters())
@@ -164,19 +163,19 @@ def make_detector(dict_id):
 #  POSE ESTIMATION (solvePnP + IPPE_SQUARE)
 # ============================================================
 def estimate_pose(corners, marker_size, camera_matrix, dist_coeffs):
-    """Uoc luong pose bang solvePnP + SOLVEPNP_IPPE_SQUARE.
+    """Pose estimation via solvePnP + SOLVEPNP_IPPE_SQUARE.
 
-    Thay cho estimatePoseSingleMarkers (deprecated tu OpenCV 4.7).
-    Tra ve (rvecs, tvecs, ratios); phan tu None neu giai that bai.
-    'ratio' = sai so tai chieu cua nghiem tot / nghiem thu hai. Cang gan 1.0
-    thi hai nghiem cang kho phan biet -> pose xoay khong dang tin (ambiguity).
+    Replaces estimatePoseSingleMarkers (deprecated since OpenCV 4.7).
+    Returns (rvecs, tvecs, ratios); entries are None when the solve fails.
+    'ratio' = reprojection error of the best solution over the second one. The
+    closer to 1.0, the harder the two are to tell apart -> unreliable rotation.
     """
     half = marker_size / 2.0
     obj_points = np.array([
-        [-half,  half, 0],   # goc 0: tren-trai
-        [ half,  half, 0],   # goc 1: tren-phai
-        [ half, -half, 0],   # goc 2: duoi-phai
-        [-half, -half, 0],   # goc 3: duoi-trai
+        [-half,  half, 0],   # corner 0: top-left
+        [ half,  half, 0],   # corner 1: top-right
+        [ half, -half, 0],   # corner 2: bottom-right
+        [-half, -half, 0],   # corner 3: bottom-left
     ], dtype=np.float32)
 
     rvecs, tvecs, ratios = [], [], []
@@ -213,25 +212,25 @@ def rotation_to_euler(rmat):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--marker-size", type=float, default=DEFAULT_MARKER_SIZE,
-                        help=f"Chieu dai canh den ngoai cung cua marker [cm] "
-                             f"(mac dinh {DEFAULT_MARKER_SIZE})")
-    parser.add_argument("--cam", type=int, default=2, help="Index camera")
+                        help=f"Outer black edge length of the marker [cm] "
+                             f"(default {DEFAULT_MARKER_SIZE})")
+    parser.add_argument("--cam", type=int, default=2, help="Camera index")
     parser.add_argument("--id", type=int, default=None,
-                        help="Chi hien thi marker co id nay (mac dinh: tat ca)")
-    parser.add_argument("--calib", default=DEFAULT_CALIB, help="Duong dan file calib JSON")
+                        help="Only show the marker with this id (default: all)")
+    parser.add_argument("--calib", default=DEFAULT_CALIB, help="Path to the calibration JSON")
     parser.add_argument("--side", default="left", choices=["left", "right"],
-                        help="Dung intrinsic cua camera trai hay phai")
+                        help="Use the left or right camera intrinsics")
     parser.add_argument("--calib-size", default=None, metavar="WxH",
-                        help="Do phan giai luc calib (vd 640x400) neu file JSON "
-                             "chua ghi. Chi dung tam; nen ghi thang vao JSON.")
+                        help="Calibration resolution (e.g. 640x400) when the JSON "
+                             "does not record it. Temporary; prefer writing it into the JSON.")
     parser.add_argument("--dict", default=DEFAULT_DICT,
-                        help=f"Ten dictionary ArUco (mac dinh {DEFAULT_DICT})")
+                        help=f"ArUco dictionary name (default {DEFAULT_DICT})")
     parser.add_argument("--ssr", action="store_true",
-                        help="Bat SSR preprocessing (chong bong do)")
+                        help="Enable SSR preprocessing (shadow suppression)")
     parser.add_argument("--lpf", action="store_true",
-                        help="Bat low-pass filter lam muot pose (nhe)")
+                        help="Enable the light pose low-pass filter")
     parser.add_argument("--log", default=None,
-                        help="Ghi log ra file CSV (vd: run1.csv)")
+                        help="Write a CSV log (e.g. run1.csv)")
     args = parser.parse_args()
 
     override_size = None
@@ -240,42 +239,42 @@ def main():
             ow, oh = args.calib_size.lower().split("x")
             override_size = (int(ow), int(oh))
         except ValueError:
-            raise SystemExit(f"--calib-size phai co dang WxH, vd 640x400 "
-                             f"(nhan duoc: {args.calib_size})")
+            raise SystemExit(f"--calib-size must be WxH, e.g. 640x400 "
+                             f"(got: {args.calib_size})")
 
     camera_matrix, dist_coeffs, calib_size = load_calibration(
         args.calib, args.side, override_size)
     print(f"Calib: {args.calib} [{args.side}] @ {calib_size[0]}x{calib_size[1]}"
-          f"{'  (tu --calib-size)' if override_size else ''}")
+          f"{'  (from --calib-size)' if override_size else ''}")
 
     print(f"OpenCV {cv2.__version__}  |  dictionary {args.dict}  |  camera {args.side}")
     print(f"Marker size: {args.marker_size} cm", end="")
     if args.marker_size == DEFAULT_MARKER_SIZE:
-        print("  (mac dinh - do lai neu khoang cach sai)")
+        print("  (default - re-measure if distances look wrong)")
     else:
         print()
-    print(f"SSR: {'BAT' if args.ssr else 'tat'}  |  LPF: {'BAT' if args.lpf else 'tat'}")
-    print("Phim tat: q=thoat  s=bat/tat SSR  d=xem anh SSR")
+    print(f"SSR: {'on' if args.ssr else 'off'}  |  LPF: {'on' if args.lpf else 'off'}")
+    print("Hotkeys: q=quit  s=toggle SSR  d=SSR preview")
 
     detect = make_detector(getattr(aruco, args.dict))
 
     cap = cv2.VideoCapture(args.cam)
     if not cap.isOpened():
-        raise SystemExit(f"Khong mo duoc camera index {args.cam}")
+        raise SystemExit(f"Cannot open camera index {args.cam}")
 
-    # Ep camera ve dung do phan giai luc calib. cap.set() rat hay that bai
-    # im lang tren USB cam -> phai doc lai frame thuc te de kiem chung.
+    # Force the camera to the calibration resolution. cap.set() fails silently
+    # on many USB cameras, so read a real frame back to verify.
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, calib_size[0])
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, calib_size[1])
 
     ok, frame = cap.read()
     if not ok:
-        raise SystemExit("Khong doc duoc frame dau tien")
+        raise SystemExit("Cannot read the first frame")
     frame_size = (frame.shape[1], frame.shape[0])
-    print(f"Do phan giai dang chay: {frame_size[0]}x{frame_size[1]}")
+    print(f"Running resolution: {frame_size[0]}x{frame_size[1]}")
     if frame_size != calib_size:
-        print(f"!! Camera KHONG nhan do phan giai {calib_size[0]}x{calib_size[1]}, "
-              f"dang tra ve {frame_size[0]}x{frame_size[1]}")
+        print(f"!! Camera did NOT accept {calib_size[0]}x{calib_size[1]}, "
+              f"it returns {frame_size[0]}x{frame_size[1]}")
     camera_matrix = fit_camera_matrix(camera_matrix, calib_size, frame_size)
 
     # Setup logging
@@ -285,17 +284,17 @@ def main():
         log_file = open(args.log, "w", newline="")
         log_writer = csv.writer(log_file)
         log_writer.writerow(["t", "detected", "id", "dist_cm",
-                             "x", "y", "z",                       # he camera
-                             "cam_x", "cam_y", "cam_alt",         # he marker
+                             "x", "y", "z",                       # camera frame
+                             "cam_x", "cam_y", "cam_alt",         # marker frame
                              "roll", "pitch", "yaw",
                              "ambiguity", "detect_ms", "total_ms", "fps"])
 
-    # Trang thai runtime
+    # Runtime state
     use_ssr = args.ssr
     show_ssr = False
-    tvec_prev = {}          # luu pose truoc de LPF (theo id)
+    tvec_prev = {}          # previous pose per id, for the LPF
 
-    # Thong ke chay
+    # Run statistics
     frame_total = 0
     frame_detected = 0
     t_start = time.time()
@@ -310,13 +309,13 @@ def main():
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # ---- SSR preprocessing (do rieng thoi gian) ----
+        # ---- SSR preprocessing (timed separately) ----
         t_ssr0 = time.perf_counter()
 
         gray_proc = ssr(gray) if use_ssr else gray
 
         t_ssr = (time.perf_counter() - t_ssr0) * 1000
-        # ---- Detection (do rieng thoi gian) ----
+        # ---- Detection (timed separately) ----
         t_det0 = time.perf_counter()
         corners, ids, _ = detect(gray_proc)
         t_det = (time.perf_counter() - t_det0) * 1000
@@ -337,7 +336,7 @@ def main():
                 if rvec is None:
                     continue
 
-                # LPF lam muot pose (nhe)
+                # Light pose smoothing
                 if args.lpf and marker_id in tvec_prev:
                     tvec = LPF_ALPHA * tvec + (1 - LPF_ALPHA) * tvec_prev[marker_id]
                 tvec_prev[marker_id] = tvec
@@ -350,12 +349,13 @@ def main():
                 rmat, _ = cv2.Rodrigues(rvec)
                 roll, pitch, yaw = rotation_to_euler(rmat)
 
-                # Vi tri CAMERA trong he MARKER (= -R^T * t).
-                # Khac han x,y,z o tren: bo nay gan voi MAT DAT chu khong gan voi
-                # camera, nen dau thuan truc giac - camera dich theo +X/+Y/+Z cua
-                # marker thi so tang, va cam_alt khong doi khi camera chi nghieng.
-                # CHI de xem/kiem tra bang mat. KHONG dua vao dieu khien: no phu
-                # thuoc rvec, ma rvec chinh la thu bi canh bao ambiguity ben duoi.
+                # CAMERA position in the MARKER frame (= -R^T * t).
+                # Unlike x,y,z above, this is tied to the GROUND rather than the
+                # camera, so the signs match intuition - moving the camera along
+                # marker +X/+Y/+Z increases the value - and cam_alt stays put
+                # when the camera merely tilts.
+                # For inspection ONLY. Never feed it to a controller: it depends
+                # on rvec, which is exactly what the ambiguity warning is about.
                 cam_x, cam_y, cam_alt = (-rmat.T @ tvec.reshape(3, 1)).ravel()
 
                 lines = [
@@ -367,7 +367,7 @@ def main():
                     cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                     y += 25
 
-                # He marker - mau vang de phan biet voi he camera (mau xanh la)
+                # Marker frame in yellow, to distinguish it from the camera frame (green)
                 cv2.putText(frame,
                             f"[marker] camx={cam_x:.1f} camy={cam_y:.1f} alt={cam_alt:.1f} cm",
                             (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
@@ -375,7 +375,7 @@ def main():
 
                 ratio = ratios[i]
                 if ratio is not None and ratio > AMBIGUITY_WARN_RATIO:
-                    cv2.putText(frame, f"! goc xoay khong tin cay ({ratio:.2f})",(10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+                    cv2.putText(frame, f"! rotation unreliable ({ratio:.2f})",(10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
                     y += 25
                 y += 10
 
@@ -388,20 +388,20 @@ def main():
                         f"{ratio:.3f}" if ratio is not None else "",
                         f"{t_det:.2f}", "", ""])
         else:
-            cv2.putText(frame, "Khong thay marker", (10, 30),
+            cv2.putText(frame, "No marker", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
             if log_writer:
                 log_writer.writerow([f"{time.time():.3f}", 0, "", "", "", "", "",
                                      "", "", "", "", "", "", "",
                                      f"{t_det:.2f}", "", ""])
 
-        # ---- Thong ke thoi gian ----
+        # ---- Timing statistics ----
         t_total = (time.perf_counter() - t0) * 1000
         fps_inst = 1000.0 / t_total if t_total > 0 else 0
         fps_smooth = 0.9 * fps_smooth + 0.1 * fps_inst if fps_smooth > 0 else fps_inst
         det_rate = 100.0 * frame_detected / frame_total
 
-        # Overlay thong tin he thong (goc duoi)
+        # System info overlay (bottom-left)
         h = frame.shape[0]
         info = [f"FPS: {fps_smooth:.1f}  |  frame: {t_total:.1f}ms",
                 f"SSR: {t_ssr:.1f}ms {'[ON]' if use_ssr else '[off]'}  detect: {t_det:.1f}ms",
@@ -421,7 +421,7 @@ def main():
             break
         elif key == ord('s'):
             use_ssr = not use_ssr
-            print(f"SSR: {'BAT' if use_ssr else 'tat'}")
+            print(f"SSR: {'on' if use_ssr else 'off'}")
         elif key == ord('d'):
             show_ssr = not show_ssr
             if not show_ssr:
@@ -430,14 +430,14 @@ def main():
     cap.release()
     if log_file:
         log_file.close()
-        print(f"Da ghi log: {args.log}")
+        print(f"Log written: {args.log}")
 
-    # In tong ket
+    # Print the summary
     elapsed = time.time() - t_start
-    print(f"\n=== TONG KET ===")
-    print(f"Tong frame: {frame_total}  |  detect: {frame_detected} "
+    print(f"\n=== SUMMARY ===")
+    print(f"Total frames: {frame_total}  |  detected: {frame_detected} "
           f"({100.0*frame_detected/max(frame_total,1):.1f}%)")
-    print(f"Thoi gian: {elapsed:.1f}s  |  FPS trung binh: {frame_total/max(elapsed,1):.1f}")
+    print(f"Elapsed: {elapsed:.1f}s  |  Average FPS: {frame_total/max(elapsed,1):.1f}")
 
     cv2.destroyAllWindows()
 

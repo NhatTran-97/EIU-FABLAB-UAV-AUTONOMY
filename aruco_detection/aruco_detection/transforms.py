@@ -1,22 +1,22 @@
-"""Doi he toa do va bieu dien goc quay.
+"""Coordinate frame conversions and rotation representations.
 
-He camera optical (OpenCV, cung la REP-145): x phai, y xuong, z toi truoc.
-He body FRD cua PX4: x truoc, y phai, z xuong.
+Camera optical frame (OpenCV, same as REP-145): x right, y down, z forward.
+PX4 body FRD frame: x forward, y right, z down.
 """
 import math
 
 import numpy as np
 
-# Camera nhin thang xuong, canh TREN cua khung hinh quay ve mui drone.
-# Suy ra: X_cam = phai, Y_cam = ra sau, Z_cam = xuong.
-# Doi mount camera thi PHAI sua ma tran nay, dung va dau rai rac trong code.
+# Camera looking straight down, top edge of the image facing the drone nose.
+# Therefore: X_cam = right, Y_cam = backward, Z_cam = down.
+# A different mount MUST be fixed here, never by patching signs across the code.
 R_BODY_FROM_CAM_DOWN = np.array([[0.0, -1.0, 0.0],
                                  [1.0,  0.0, 0.0],
                                  [0.0,  0.0, 1.0]])
 
 
 def rotmat_to_quat(R):
-    """Tra ve (x, y, z, w) theo thu tu cua geometry_msgs/Quaternion."""
+    """Return (x, y, z, w), the order used by geometry_msgs/Quaternion."""
     tr = R[0, 0] + R[1, 1] + R[2, 2]
     if tr > 0:
         s = math.sqrt(tr + 1.0) * 2
@@ -38,9 +38,9 @@ def rotmat_to_quat(R):
 
 
 def quat_to_rotmat(q):
-    """q = [w, x, y, z] (Hamilton) - dung thu tu cua px4_msgs/VehicleAttitude.
+    """q = [w, x, y, z] (Hamilton), the order px4_msgs/VehicleAttitude uses.
 
-    Chu y: ROS dung [x, y, z, w], PX4 dung [w, x, y, z]. Rat de sai o day.
+    Careful: ROS uses [x, y, z, w] but PX4 uses [w, x, y, z]. Easy to get wrong.
     """
     w, x, y, z = q
     return np.array([
@@ -51,11 +51,11 @@ def quat_to_rotmat(q):
 
 
 def rotation_to_euler(rmat):
-    """ZYX -> (roll, pitch, yaw) do, quanh cac truc CUA CAMERA.
+    """ZYX -> (roll, pitch, yaw) in degrees, about the CAMERA axes.
 
-    'yaw' o day la xoay quanh truc quang, KHONG phai heading cua drone. Va khi
-    marker quay mat thang vao camera thi roll luon quanh +-180, se nhay dau
-    giua cac frame - dung loc hay PID truc tiep tren no.
+    'yaw' here is rotation about the optical axis, NOT the drone heading. And
+    when the marker faces the camera head-on, roll sits near +-180 and will flip
+    sign between frames -- never filter or run a PID directly on it.
     """
     sy = math.sqrt(rmat[0, 0] ** 2 + rmat[1, 0] ** 2)
     if sy > 1e-6:
@@ -70,28 +70,28 @@ def rotation_to_euler(rmat):
 
 
 def camera_in_marker(rmat, tvec):
-    """Vi tri camera trong he marker: -R^T * t.
+    """Camera position expressed in the marker frame: -R^T * t.
 
-    Gan voi MAT DAT chu khong gan voi camera, nen dau thuan truc giac va thanh
-    phan thu 3 (do cao) khong doi khi camera chi nghieng.
+    Tied to the GROUND rather than to the camera, so the signs match intuition
+    and the third component (height) stays constant when the camera only tilts.
 
-    CHI dung de xem va kiem tra bang mat. Khong dua vao dieu khien: no phu thuoc
-    rvec, ma rvec chinh la thu bi canh bao ambiguity.
+    For inspection and visual checks ONLY. Do not feed it to a controller: it
+    depends on rvec, which is exactly what the ambiguity warning is about.
     """
     return (-rmat.T @ np.asarray(tvec).reshape(3, 1)).ravel()
 
 
 def cam_to_body(p_cam, R_body_from_cam=R_BODY_FROM_CAM_DOWN):
-    """Vi tri marker trong he body FRD: (forward, right, down)."""
+    """Marker position in the body FRD frame: (forward, right, down)."""
     return R_body_from_cam @ np.asarray(p_cam).reshape(3)
 
 
 def marker_yaw_in_ned(rmat_cam_from_marker, q_attitude,
                       R_body_from_cam=R_BODY_FROM_CAM_DOWN):
-    """Huong marker quanh truc thang dung, trong he NED [rad].
+    """Marker heading about the vertical axis, in the NED frame [rad].
 
-    Day la thanh phan DUY NHAT cua rvec dang tin: ambiguity lat phan nghieng,
-    con xoay trong mat phang marker gan nhu khong bi anh huong.
+    This is the ONLY trustworthy component of rvec: the ambiguity flips the tilt
+    but leaves in-plane rotation essentially untouched.
     """
     R_nm = quat_to_rotmat(q_attitude) @ R_body_from_cam @ rmat_cam_from_marker
     return math.atan2(R_nm[1, 0], R_nm[0, 0])

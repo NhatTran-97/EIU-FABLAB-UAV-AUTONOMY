@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Mo phong Vector Field Landing 2D - theo dung convention paper + guidance.cpp.
 
-Convention (Figure 1b cua paper):
+Convention (Figure 1b of the paper):
   x = phuong ngang (theo huong platform di chuyen)
   z = cao do
-  phi = atan2(x, z)   <- goc lech khoi phuong THANG DUNG (khong phai atan2(z,x))
+  phi = atan2(x, z)   <- angle from the VERTICAL axis (not atan2(z,x))
   phi_des = -27.5°    <- bisector nghieng ve phia drone tiep can
 
 Vector field (guidance.cpp), voi convention phi=atan2(x,z):
@@ -36,7 +36,7 @@ def vector_field(x, z):
     r = np.hypot(x, z)
     if r < 1e-6:
         return 0.0, 0.0
-    phi = np.arctan2(x, z)           # goc tu truc thang dung
+    phi = np.arctan2(x, z)           # angle from the vertical axis
     e_phi = phi - PHI_DES
 
     K1n = K1 / np.tanh(1.0 / EPS1)
@@ -82,7 +82,7 @@ def plot_field_and_trajectories():
     thetas = np.linspace(PHI_2, PHI_1, 30)
     xs = [0] + [L*np.sin(t) for t in thetas] + [0]
     zs = [0] + [L*np.cos(t) for t in thetas] + [0]
-    ax.fill(xs, zs, color='green', alpha=0.08, label='RDR (vung detect duoc)')
+    ax.fill(xs, zs, color='green', alpha=0.08, label='RDR (detectable region)')
 
     # Vector field grid
     xg = np.linspace(-4.0, 1.0, 24)

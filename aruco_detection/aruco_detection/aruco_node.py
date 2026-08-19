@@ -1,41 +1,42 @@
 #!/usr/bin/env python3
-"""ROS2 node phat hien ArUco va publish pose marker trong he camera optical.
+"""ROS2 node: detect ArUco markers and publish the marker pose.
 
-Publish:
-    ~/pose       geometry_msgs/PoseStamped  - DON VI MET
+Publishes:
+    ~/pose       geometry_msgs/PoseStamped  - METERS
     ~/detected   std_msgs/Bool
     ~/ambiguity  std_msgs/Float32
-    ~/image      sensor_msgs/Image          - anh debug (neu publish_debug_image)
+    ~/image      sensor_msgs/Image          - debug overlay (publish_debug_image)
 
-frame_id mac dinh la camera optical frame theo REP-145: x phai, y xuong, z toi
-truoc. Trung khop he cua OpenCV nen tvec publish thang, khong phai doi he.
+frame_id defaults to the camera optical frame per REP-145: x right, y down,
+z forward. That matches the OpenCV convention exactly, so tvec is published
+as-is with no frame conversion.
 
+Usage:
+    ros2 run tf2_ros static_transform_publisher \
+      --frame-id map --child-frame-id camera_optical_frame
 
-ros2 run tf2_ros static_transform_publisher \
-  --frame-id map --child-frame-id camera_optical_frame
-
-ros2 run aruco_detection aruco_node.py --ros-args \
-  -p target_id:=1 -p use_reliable_qos:=true -p publish_debug_image:=true
+    ros2 run aruco_detection aruco_node.py --ros-args \
+      -p target_id:=1 -p use_reliable_qos:=true -p publish_debug_image:=true
 
 """
 import os
 import time
 
 import cv2
-
+import cv2.aruco as aruco
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
-
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, Float32
 
-# Import TUYET DOI, khong dung relative: file nay duoc cai vao
-# lib/aruco_detection/ va chay nhu script (__main__) nen khong co package cha.
-import cv2.aruco as aruco
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+# Absolute imports, not relative: this file is installed into
+# lib/aruco_detection/ and run as a script (__main__), so it has no parent
+# package to resolve relative imports against.
 from aruco_detection.calibration import (fit_camera_matrix, load_calibration,
                                          parse_size)
 from aruco_detection.detector import MarkerDetector
+from aruco_detection.load_camera import open_camera
 from aruco_detection.transforms import rotmat_to_quat
 from aruco_detection import visualization as viz
 
@@ -43,30 +44,31 @@ try:
     from cv_bridge import CvBridge
 except ImportError:
     CvBridge = None
-from sensor_msgs.msg import Image
+
 
 class ArucoPoseNode(Node):
 
     def __init__(self):
         super().__init__("aruco_pose_node")
 
-
-   
-
-        self.declare_parameter("camera_index", 0)
+        # Accepts a USB index ("2"), an RTSP URL, or a video file path.
+        self.declare_parameter("camera_source", "2")
+        self.declare_parameter("threaded_capture", True)
         self.declare_parameter("calib_file", self._default_calib_path())
         self.declare_parameter("calib_side", "left")
         self.declare_parameter("calib_size", "")
         self.declare_parameter("marker_size", 0.267)
         self.declare_parameter("dictionary", "DICT_4X4_50")
-        self.declare_parameter("target_id", 1)   # -1 = nhan moi marker (ID that luon >= 0)
+        self.declare_parameter("target_id", 1)   # -1 accepts any marker (real IDs are >= 0)
         self.declare_parameter("frame_id", "camera_optical_frame")
         self.declare_parameter("publish_rate", 30.0)
         self.declare_parameter("use_ssr", False)
-        self.declare_parameter("lpf_alpha", 1.0)
+        self.declare_parameter("lpf_alpha", 1.0)  # 1.0 = no smoothing
         self.declare_parameter("ambiguity_warn", 0.7)
         self.declare_parameter("publish_debug_image", False)
-       
+        # BEST_EFFORT suits a 30Hz sensor stream and matches the QoS px4_msgs
+        # topics use, but "ros2 topic hz" on Humble cannot request it and so
+        # receives nothing. Turn this on to debug with the standard tools.
         self.declare_parameter("use_reliable_qos", False)
 
         p = self.get_parameter
@@ -81,16 +83,16 @@ class ArucoPoseNode(Node):
             p("calib_file").value, p("calib_side").value,
             parse_size(p("calib_size").value))
         self.get_logger().info(
-            f"Calib {p('calib_file').value} [{p('calib_side').value}] "
+            f"Calibration {p('calib_file').value} [{p('calib_side').value}] "
             f"@ {calib_size[0]}x{calib_size[1]}")
 
         dict_name = p("dictionary").value
         if not hasattr(aruco, dict_name):
-            raise RuntimeError(f"Dictionary khong ton tai: {dict_name}")
+            raise RuntimeError(f"Unknown dictionary: {dict_name}")
 
-        frame_size = self._open_camera(p("camera_index").value, calib_size)
-        self.camera_matrix = fit_camera_matrix(
-            self.camera_matrix, calib_size, frame_size)
+        frame_size = self._open_camera(p("camera_source").value, calib_size,
+                                       p("threaded_capture").value)
+        self.camera_matrix = fit_camera_matrix(self.camera_matrix, calib_size, frame_size)
 
         self.detector = MarkerDetector(
             dict_id=getattr(aruco, dict_name),
@@ -103,7 +105,8 @@ class ArucoPoseNode(Node):
         reliable = p("use_reliable_qos").value
         qos = QoSProfile(depth=1, reliability=(ReliabilityPolicy.RELIABLE if reliable
                                                else ReliabilityPolicy.BEST_EFFORT))
-        self.get_logger().info(f"QoS reliability: {'RELIABLE' if reliable else 'BEST_EFFORT'}")
+        self.get_logger().info(
+            f"QoS reliability: {'RELIABLE' if reliable else 'BEST_EFFORT'}")
         self.pub_pose = self.create_publisher(PoseStamped, "~/pose", qos)
         self.pub_detected = self.create_publisher(Bool, "~/detected", qos)
         self.pub_ambiguity = self.create_publisher(Float32, "~/ambiguity", qos)
@@ -111,7 +114,7 @@ class ArucoPoseNode(Node):
         self.bridge = None
         if self.publish_debug_image:
             if CvBridge is None:
-                self.get_logger().warn("Khong co cv_bridge -> tat publish_debug_image")
+                self.get_logger().warn("cv_bridge missing -> publish_debug_image disabled")
                 self.publish_debug_image = False
             else:
                 from sensor_msgs.msg import Image
@@ -120,61 +123,56 @@ class ArucoPoseNode(Node):
 
         self.n_frame = 0
         self.n_detected = 0
+        self._last_cb = None
+        self._fps = 0.0
         self.create_timer(1.0 / p("publish_rate").value, self.on_timer)
         self.get_logger().info(
-            f"San sang: marker {self.marker_size * 100:.1f}cm, {dict_name}, "
+            f"Ready: marker {self.marker_size * 100:.1f}cm, {dict_name}, "
             f"target_id={self.target_id}, frame_id '{self.frame_id}'")
 
     @staticmethod
     def _default_calib_path():
         try:
             from ament_index_python.packages import get_package_share_directory
-            return os.path.join(get_package_share_directory("aruco_detection"),
-                                "calib_data_mono.json")
+            return os.path.join(get_package_share_directory("aruco_detection"),"calib_data_mono.json")
         except Exception:
-            return os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "calib_data_mono.json")
+            return os.path.join(os.path.dirname(os.path.abspath(__file__)),"calib_data_mono.json")
 
-    def _open_camera(self, index, calib_size):
-        self.cap = cv2.VideoCapture(index)
-        if not self.cap.isOpened():
-            raise RuntimeError(f"Khong mo duoc camera index {index}")
+    def _open_camera(self, source, calib_size, threaded):
+        self.cam = open_camera(source, width=calib_size[0], height=calib_size[1],
+                               threaded=threaded)
+        self.get_logger().info(f"Camera: {self.cam}")
 
-        # cap.set() rat hay that bai im lang tren USB cam nen phai doc frame that
-        # de kiem chung, khong thi moi khoang cach sai theo ti le do phan giai.
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, calib_size[0])
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, calib_size[1])
-        ok, frame = self.cap.read()
-        if not ok:
-            raise RuntimeError("Khong doc duoc frame dau tien")
-
-        frame_size = (frame.shape[1], frame.shape[0])
+        # The requested resolution is only a request: cap.set() fails silently
+        # on many USB cameras. Compare against what actually came back, because
+        # a mismatch makes every distance wrong by the resolution ratio.
+        frame_size = self.cam.resolution
         if frame_size != calib_size:
             self.get_logger().warn(
-                f"Camera tra ve {frame_size[0]}x{frame_size[1]} chu khong phai "
-                f"{calib_size[0]}x{calib_size[1]} nhu luc calib")
+                f"Camera returns {frame_size[0]}x{frame_size[1]} instead of the "
+                f"calibrated {calib_size[0]}x{calib_size[1]}")
         return frame_size
 
     def on_timer(self):
         t0 = time.perf_counter()
-        ok, frame = self.cap.read()
+        ok, frame = self.cam.read()
         if not ok:
             return
         self.n_frame += 1
 
+        if self._last_cb is not None:
+            dt = t0 - self._last_cb
+            if dt > 0:
+                self._fps = 0.9 * self._fps + 0.1 * (1.0 / dt) if self._fps else 1.0 / dt
+        self._last_cb = t0
 
         stamp = self.get_clock().now().to_msg()
-        
-        msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
-        msg.header.stamp = stamp
-        msg.header.frame_id = self.frame_id
-        self.pub_image.publish(msg)
-
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         t_det0 = time.perf_counter()
         detections = self.detector.process(gray, self.target_id)
         detect_ms = (time.perf_counter() - t_det0) * 1000
+
         if detections:
             self.n_detected += 1
             det = detections[0]
@@ -184,8 +182,7 @@ class ArucoPoseNode(Node):
                 self.pub_ambiguity.publish(Float32(data=float(det.ambiguity)))
                 if det.ambiguity > self.ambiguity_warn:
                     self.get_logger().warn(
-                        f"Goc xoay khong tin cay ({det.ambiguity:.2f}): dung "
-                        f"position, bo qua orientation",
+                        f"Rotation unreliable ({det.ambiguity:.2f}): use the "f"position, ignore the orientation",
                         throttle_duration_sec=2.0)
         self.pub_detected.publish(Bool(data=bool(detections)))
         if self.publish_debug_image:
@@ -211,14 +208,13 @@ class ArucoPoseNode(Node):
         y = 30
         if detections:
             for det in detections:
-                y = viz.draw_detection(frame, det, self.camera_matrix,self.dist_coeffs, self.marker_size,
-                                       y=y, ambiguity_warn=self.ambiguity_warn)
+                y = viz.draw_detection(frame, det, self.camera_matrix,
+                                       self.dist_coeffs, self.marker_size, y=y, ambiguity_warn=self.ambiguity_warn)
         else:
             viz.draw_no_marker(frame, y)
         frame_ms = (time.perf_counter() - t0) * 1000
-        viz.draw_stats(frame, fps=1000.0 / max(frame_ms, 1e-6), frame_ms=frame_ms,
-                       detect_ms=detect_ms, detected=self.n_detected,
-                       total=self.n_frame)
+        viz.draw_stats(frame, fps=self._fps, frame_ms=frame_ms,
+                       detect_ms=detect_ms, detected=self.n_detected, total=self.n_frame)
 
         msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
         msg.header.stamp = stamp
@@ -226,8 +222,8 @@ class ArucoPoseNode(Node):
         self.pub_image.publish(msg)
 
     def destroy_node(self):
-        if getattr(self, "cap", None) is not None:
-            self.cap.release()
+        if getattr(self, "cam", None) is not None:
+            self.cam.release()
         super().destroy_node()
 
 

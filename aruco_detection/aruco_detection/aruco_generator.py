@@ -21,13 +21,13 @@ ARUCO_DICT = {
     "DICT_6X6_250": cv2.aruco.DICT_6X6_250,
     "DICT_6X6_1000": cv2.aruco.DICT_6X6_1000,
 
-    # luoi 7x7 - nhieu ID nhat, nhung can marker to/gan moi detect duoc
+    # 7x7 grid - the most IDs, but needs a large or close marker to detect
     "DICT_7X7_50": cv2.aruco.DICT_7X7_50,
     "DICT_7X7_100": cv2.aruco.DICT_7X7_100,
     "DICT_7X7_250": cv2.aruco.DICT_7X7_250,
     "DICT_7X7_1000": cv2.aruco.DICT_7X7_1000,
 
-    # bo goc cua thu vien ArUco cu (1024 marker, luoi 5x5)
+    # original set from the old ArUco library (1024 markers, 5x5 grid)
 
     "DICT_ARUCO_ORIGINAL": cv2.aruco.DICT_ARUCO_ORIGINAL,
 
@@ -55,7 +55,7 @@ else:
 max_id = arucoDict.bytesList.shape[0]
 if id >= max_id:
     raise ValueError(
-        "ID {} vuot gioi han cua {} (chi co ID 0..{})".format(id, aruco_type, max_id - 1)
+        "ID {} exceeds the range of {} (valid IDs are 0..{})".format(id, aruco_type, max_id - 1)
     )
 
 print("ArUco type '{}' with ID '{}' ".format(aruco_type, id))
@@ -75,7 +75,7 @@ os.makedirs("arucoMarkers", exist_ok=True)
 tag_name = "arucoMarkers/" + aruco_type + "_" + str(id) + ".png"
 
 if not cv2.imwrite(tag_name, tag):
-    raise IOError("Khong ghi duoc file: " + tag_name)
+    raise IOError("Could not write file: " + tag_name)
 cv2.imshow("ArUCo Tag", tag)
 cv2.waitKey(0)
 cv2.destroyAllWindows()
