@@ -61,6 +61,10 @@ def draw_detection(frame, det, camera_matrix, dist_coeffs, marker_size,
     if det.ambiguity is not None and det.ambiguity > ambiguity_warn:
         y = _put(frame, f"! rotation unreliable ({det.ambiguity:.2f})", y, ORANGE)
 
+    if det.reprojection_error is not None:
+        color = GREEN if det.reprojection_error <= 5.0 else ORANGE
+        y = _put(frame, f"reprojection RMS={det.reprojection_error:.2f}px", y, color)
+
     return y + 10
 
 

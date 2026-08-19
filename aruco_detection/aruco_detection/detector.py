@@ -1,9 +1,14 @@
-"""ArUco detection and marker pose estimation."""
+"""ArUco/Fractal Marker detection and pose estimation."""
 from dataclasses import dataclass
 
 import cv2
 import cv2.aruco as aruco
 import numpy as np
+
+try:
+    import nanofractal as nf
+except ImportError:
+    nf = None
 
 
 @dataclass
@@ -12,7 +17,8 @@ class Detection:
     corners: np.ndarray      # (4, 2) pixels, ordered TL, TR, BR, BL
     rvec: np.ndarray         # (3, 1)
     tvec: np.ndarray         # (3, 1), same unit as marker_size
-    ambiguity: float         # closer to 1.0 means the rotation is less trustworthy
+    ambiguity: float = None  # ArUco IPPE ratio; closer to 1.0 is less trustworthy
+    reprojection_error: float = None  # Fractal pose RMS, in pixels
 
 
 def ssr(gray, sigma=100.0):
@@ -83,11 +89,30 @@ def estimate_pose(corners, marker_size, camera_matrix, dist_coeffs):
 
 
 class MarkerDetector:
-    """Detection, pose estimation and optional smoothing in one place."""
+    """ArUco/Fractal detection, pose estimation and optional smoothing."""
 
     def __init__(self, dict_id, marker_size, camera_matrix, dist_coeffs,
-                 use_ssr=False, lpf_alpha=1.0):
-        self.detect = make_detector(dict_id)
+                 use_ssr=False, lpf_alpha=1.0, detector_type="aruco",
+                 fractal_config="FRACTAL_5L_6"):
+        self.detector_type = str(detector_type).lower()
+        if self.detector_type not in ("aruco", "fractal"):
+            raise RuntimeError(f"detector_type must be 'aruco' or 'fractal' "f"(got: {detector_type})")
+
+        self.detect = None
+        self.fractal_detector = None
+        if self.detector_type == "aruco":
+            if dict_id is None:
+                raise RuntimeError("dict_id is required for ArUco detection")
+            self.detect = make_detector(dict_id)
+        else:
+            if nf is None:
+                raise RuntimeError(
+                    "Fractal mode requires nanofractal: pip install nanofractal")
+            try:
+                self.fractal_detector = nf.FractalDetector(fractal_config,marker_size=marker_size,)
+            except ValueError as error:
+                raise RuntimeError(str(error)) from error
+
         self.marker_size = marker_size
         self.camera_matrix = camera_matrix
         self.dist_coeffs = dist_coeffs
@@ -97,7 +122,20 @@ class MarkerDetector:
 
     def process(self, gray, target_id=None):
         """Return list[Detection], filtered by target_id when given."""
-        corners, ids, _ = self.detect(ssr(gray) if self.use_ssr else gray)
+        image = ssr(gray) if self.use_ssr else gray
+        if self.detector_type == "fractal":
+            return self._process_fractal(image, target_id)
+        return self._process_aruco(image, target_id)
+
+    def _smooth_tvec(self, marker_id, tvec):
+        if self.lpf_alpha < 1.0 and marker_id in self._tvec_prev:
+            alpha = self.lpf_alpha
+            tvec = alpha * tvec + (1 - alpha) * self._tvec_prev[marker_id]
+        self._tvec_prev[marker_id] = tvec
+        return tvec
+
+    def _process_aruco(self, image, target_id):
+        corners, ids, _ = self.detect(image)
         if ids is None or len(ids) == 0:
             return []
 
@@ -112,11 +150,7 @@ class MarkerDetector:
             if rvecs[i] is None:
                 continue
 
-            tvec = tvecs[i]
-            if self.lpf_alpha < 1.0 and marker_id in self._tvec_prev:
-                a = self.lpf_alpha
-                tvec = a * tvec + (1 - a) * self._tvec_prev[marker_id]
-            self._tvec_prev[marker_id] = tvec
+            tvec = self._smooth_tvec(marker_id, tvecs[i])
 
             out.append(Detection(marker_id=marker_id,
                                  corners=corners[i].reshape(4, 2),
@@ -124,3 +158,36 @@ class MarkerDetector:
                                  tvec=tvec,
                                  ambiguity=ratios[i]))
         return out
+
+    def _process_fractal(self, image, target_id):
+        image = np.ascontiguousarray(image, dtype=np.uint8)
+        result = self.fractal_detector.detect(image,with_inner_points=True)
+        if result.ids.size == 0:
+            return []
+
+        # FractalDetector represents one composite marker pose. Its detector
+        # can expose an ID, but there is one pose for the complete composite.
+        marker_id = int(result.ids[0])
+        if target_id is not None and marker_id != target_id:
+            return []
+
+        pose = self.fractal_detector.estimate_pose(
+            result,
+            np.ascontiguousarray(self.camera_matrix, dtype=np.float64),
+            np.ascontiguousarray(self.dist_coeffs, dtype=np.float64).reshape(-1),)
+        if pose is None:
+            return []
+
+        rvec, tvec, reprojection_error = pose
+        rvec = np.asarray(rvec, dtype=np.float64).reshape(3, 1)
+        tvec = np.asarray(tvec, dtype=np.float64).reshape(3, 1)
+        tvec = self._smooth_tvec(marker_id, tvec)
+
+        return [Detection(
+            marker_id=marker_id,
+            corners=result.corners[0].reshape(4, 2),
+            rvec=rvec,
+            tvec=tvec,
+            ambiguity=None,
+            reprojection_error=float(reprojection_error),
+        )]
