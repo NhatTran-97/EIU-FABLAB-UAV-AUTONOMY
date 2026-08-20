@@ -37,7 +37,6 @@ def generate_launch_description():
                 "frame_id": "camera_optical_frame",
                 "publish_rate": 30.0,
                 "use_ssr": False,
-                "lpf_alpha": 1.0,            # 1.0 = no smoothing
                 "use_reliable_qos": False,   # True to debug with ros2 topic hz
                 "publish_debug_image": False,
             }],

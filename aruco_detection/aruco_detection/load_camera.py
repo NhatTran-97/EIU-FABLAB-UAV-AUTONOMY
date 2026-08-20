@@ -44,7 +44,8 @@ class CameraSource:
         return self
 
     def read(self):
-        return self._grab()
+        ok, frame = self._grab()
+        return (ok, frame, time.monotonic()) if ok else (False, None, 0.0)
 
     def release(self):
         if self.cap is not None:
@@ -114,8 +115,7 @@ class RtspCamera(CameraSource):
         if not use_gst:
             return cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
 
-        pipeline = (
-            f"rtspsrc location={self.url} latency={self.latency} "
+        pipeline = (f"rtspsrc location={self.url} latency={self.latency} "
             f"protocols={self.protocol} drop-on-latency=true ! "
             "decodebin ! videoconvert n-threads=4 ! video/x-raw,format=BGR ! "
             "appsink sync=false drop=true max-buffers=1")
@@ -167,6 +167,7 @@ class ThreadedCamera:
         self._running = False
         self._thread = None
         self._last_error = None
+        self._frame_time = 0.0
 
     def __str__(self):
         return f"Threaded({self.source})"
@@ -189,13 +190,15 @@ class ThreadedCamera:
     def _loop(self):
         while self._running:
             try:
-                ok, frame = self.source.read()
+                ok, frame, t_cap = self.source.read()
             except Exception as e:            # keep the thread alive on driver hiccups
-                ok, frame, self._last_error = False, None, str(e)
+                self._last_error = str(e)
+                ok, frame, t_cap = False, None, 0.0
 
             if ok:
                 with self._lock:
                     self._frame = frame
+                    self._frame_time = t_cap
                     self._seq += 1
                 continue
 
@@ -213,9 +216,9 @@ class ThreadedCamera:
     def read(self):
         with self._lock:
             if self._seq == self._taken or self._frame is None:
-                return False, None
+                return False, None, 0.0
             self._taken = self._seq
-            return True, self._frame
+            return True, self._frame, self._frame_time
 
     def release(self):
         self._running = False

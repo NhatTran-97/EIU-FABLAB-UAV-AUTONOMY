@@ -6,10 +6,10 @@ import cv2
 import nanofractal as nf
 import numpy as np
 
-try:
-    from aruco_detection.calibration import fit_camera_matrix, load_calibration
-except ImportError:
-    from calibration import fit_camera_matrix, load_calibration
+# Chay bang: python3 scripts/fractal_test.py  (sau khi source install/setup.bash).
+# Fallback "from calibration import" cu da bo -- file khong con nam canh
+# calibration.py nua nen no chi che di loi that.
+from aruco_detection.calibration import fit_camera_matrix, load_calibration
 
 
 MARKER_SIZE_CM = 28.2  # chiều dài cạnh ngoài của marker

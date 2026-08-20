@@ -89,10 +89,15 @@ def estimate_pose(corners, marker_size, camera_matrix, dist_coeffs):
 
 
 class MarkerDetector:
-    """ArUco/Fractal detection, pose estimation and optional smoothing."""
+    """ArUco/Fractal detection va uoc luong pose. KHONG loc, khong giu trang thai.
+
+    Loc thuoc ve tang uoc luong, khong phai tang phat hien -- va phai loc tin
+    hieu DA khu nghieng. Lam muot tvec o he quang hoc chi khien dao dong muot
+    hon chu khong het, vi nghieng van con ghep trong do.
+    """
 
     def __init__(self, dict_id, marker_size, camera_matrix, dist_coeffs,
-                 use_ssr=False, lpf_alpha=1.0, detector_type="aruco",
+                 use_ssr=False, detector_type="aruco",
                  fractal_config="FRACTAL_5L_6"):
         self.detector_type = str(detector_type).lower()
         if self.detector_type not in ("aruco", "fractal"):
@@ -117,8 +122,6 @@ class MarkerDetector:
         self.camera_matrix = camera_matrix
         self.dist_coeffs = dist_coeffs
         self.use_ssr = use_ssr
-        self.lpf_alpha = lpf_alpha      # 1.0 disables the filter entirely
-        self._tvec_prev = {}
 
     def process(self, gray, target_id=None):
         """Return list[Detection], filtered by target_id when given."""
@@ -126,13 +129,6 @@ class MarkerDetector:
         if self.detector_type == "fractal":
             return self._process_fractal(image, target_id)
         return self._process_aruco(image, target_id)
-
-    def _smooth_tvec(self, marker_id, tvec):
-        if self.lpf_alpha < 1.0 and marker_id in self._tvec_prev:
-            alpha = self.lpf_alpha
-            tvec = alpha * tvec + (1 - alpha) * self._tvec_prev[marker_id]
-        self._tvec_prev[marker_id] = tvec
-        return tvec
 
     def _process_aruco(self, image, target_id):
         corners, ids, _ = self.detect(image)
@@ -150,12 +146,10 @@ class MarkerDetector:
             if rvecs[i] is None:
                 continue
 
-            tvec = self._smooth_tvec(marker_id, tvecs[i])
-
             out.append(Detection(marker_id=marker_id,
                                  corners=corners[i].reshape(4, 2),
                                  rvec=rvecs[i],
-                                 tvec=tvec,
+                                 tvec=tvecs[i],
                                  ambiguity=ratios[i]))
         return out
 
@@ -181,7 +175,6 @@ class MarkerDetector:
         rvec, tvec, reprojection_error = pose
         rvec = np.asarray(rvec, dtype=np.float64).reshape(3, 1)
         tvec = np.asarray(tvec, dtype=np.float64).reshape(3, 1)
-        tvec = self._smooth_tvec(marker_id, tvec)
 
         return [Detection(
             marker_id=marker_id,

@@ -434,7 +434,7 @@ def main():
 
     # Print the summary
     elapsed = time.time() - t_start
-    print(f"\n=== SUMMARY ===")
+    print("\n=== SUMMARY ===")
     print(f"Total frames: {frame_total}  |  detected: {frame_detected} "
           f"({100.0*frame_detected/max(frame_total,1):.1f}%)")
     print(f"Elapsed: {elapsed:.1f}s  |  Average FPS: {frame_total/max(elapsed,1):.1f}")

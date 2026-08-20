@@ -1,47 +1,52 @@
 cmake_minimum_required(VERSION 3.8)
 project(aruco_detection)
 
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
-endif()
-
-# find dependencies
 find_package(ament_cmake REQUIRED)
-# ament_cmake_python is a macro used INSIDE an ament_cmake package to install
-# python modules so they are importable. Build type stays ament_cmake.
+# Macro dung BEN TRONG mot package ament_cmake de cai module python cho
+# import duoc. Build type van la ament_cmake.
 find_package(ament_cmake_python REQUIRED)
 
-# Install the aruco_detection/ python package so this works:
+# Cai thu muc aruco_detection/ de dong nay chay duoc:
 #   from aruco_detection.detector import MarkerDetector
 ament_python_install_package(${PROJECT_NAME})
 
-# Executable node: ros2 run aruco_detection aruco_node.py
+# ROS node: ros2 run aruco_detection <ten>
 install(PROGRAMS
   aruco_detection/aruco_node.py
+  aruco_detection/marker_localizer_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
-# The calibration file must live in share/ because the node resolves it via
+# Cong cu chay tay (python3 <file>), khong phai ROS node.
+install(PROGRAMS
+  scripts/aruco_generator.py
+  scripts/aruco_pose_estimation.py
+  scripts/fractal_test.py
+  scripts/vector_field_sim.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+# File hieu chuan phai nam trong share/ vi node tim no qua
 # get_package_share_directory("aruco_detection").
 install(FILES
   aruco_detection/calib_data_mono.json
   DESTINATION share/${PROJECT_NAME}
 )
 
-install(DIRECTORY launch
+install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
+  OPTIONAL
 )
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
-  # the following line skips the linter which checks for copyrights
-  # comment the line when a copyright and license is added to all source files
+  find_package(ament_cmake_pytest REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
-  # the following line skips cpplint (only works in a git repo)
-  # comment the line when this package is in a git repo and when
-  # a copyright and license is added to all source files
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # Toan hoc he toa do -- thuan numpy, chay khong can ROS.
+  ament_add_pytest_test(test_geometry test/test_geometry.py)
 endif()
 
 ament_package()
