@@ -96,7 +96,7 @@ ros2 run aruco_detection marker_localizer_node.py     # cần MAVROS đang chạ
 | `rtsp_latency_ms` | 100 | Jitter buffer, chỉ áp dụng cho RTSP. Là **một phần đã biết** của `pipeline_latency_s`. |
 | `pipeline_latency_s` | 0.0 | Trễ trước khi frame tới `read()`. **Phải đo** — chĩa camera vào đồng hồ bấm giây. Ở 2 m/s, 100 ms = 20 cm sai vị trí. |
 | `camera_timeout_s` | 1.0 | Ngưỡng tách "chưa có frame mới" (bình thường) khỏi "camera chết". |
-| `debug_image_every` | 6 | Ảnh 1080p là ~6 MB/message; publish mỗi frame ở 30 Hz là 180 MB/s. |
+| `debug_image_every` | 1 | Publish mỗi frame (~30 FPS). Tăng lên 2–6 với ảnh lớn để giảm băng thông DDS. |
 | `mount_roll_deg` / `mount_pitch_deg` | 0.0 | Sai số góc lắp. Lệch 2° ở 5 m = **17 cm** sai số hệ thống, không bộ lọc nào khử được. |
 
 ## Hiệu chuẩn góc lắp — làm trước khi bay

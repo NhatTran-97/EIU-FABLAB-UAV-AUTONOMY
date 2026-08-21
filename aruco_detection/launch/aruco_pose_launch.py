@@ -12,6 +12,8 @@ def generate_launch_description():
     dictionary = LaunchConfiguration("dictionary")
     fractal_config = LaunchConfiguration("fractal_config")
     target_id = LaunchConfiguration("target_id")
+    publish_debug_image = LaunchConfiguration("publish_debug_image")
+    debug_image_every = LaunchConfiguration("debug_image_every")
 
     return LaunchDescription([
         DeclareLaunchArgument("camera_source", default_value="2"),
@@ -20,6 +22,8 @@ def generate_launch_description():
         DeclareLaunchArgument("dictionary", default_value="DICT_4X4_50"),
         DeclareLaunchArgument("fractal_config", default_value="FRACTAL_5L_6"),
         DeclareLaunchArgument("target_id", default_value="1"),
+        DeclareLaunchArgument("publish_debug_image", default_value="false"),
+        DeclareLaunchArgument("debug_image_every", default_value="1"),
         Node(
             package="aruco_detection",
             executable="aruco_node.py",
@@ -38,7 +42,10 @@ def generate_launch_description():
                 "publish_rate": 30.0,
                 "use_ssr": False,
                 "use_reliable_qos": False,   # True to debug with ros2 topic hz
-                "publish_debug_image": False,
+                "publish_debug_image": ParameterValue(
+                    publish_debug_image, value_type=bool),
+                "debug_image_every": ParameterValue(
+                    debug_image_every, value_type=int),
             }],
         ),
     ])

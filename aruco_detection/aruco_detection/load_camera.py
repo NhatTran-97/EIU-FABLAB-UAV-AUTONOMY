@@ -34,8 +34,10 @@ class CameraSource:
 
     def start(self):
         self.cap = self._open()
+
         if self.cap is None or not self.cap.isOpened():
             raise RuntimeError(f"Cannot open camera source: {self}")
+        
         ok, frame = self.cap.read()
         if not ok:
             self.release()
@@ -52,10 +54,8 @@ class CameraSource:
             self.cap.release()
             self.cap = None
 
-
 class UsbCamera(CameraSource):
     """Local V4L2 / USB camera addressed by device index."""
-
     def __init__(self, index, width=None, height=None, fourcc=None, fps=None):
         super().__init__()
         self.index = int(index)
@@ -72,9 +72,7 @@ class UsbCamera(CameraSource):
         if not cap.isOpened():
             return cap
 
-        # Keep only the newest frame. Without this the driver queues frames and
-        # latency grows without bound whenever we read slower than the camera
-        # produces.
+
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         if self.fourcc:
@@ -87,8 +85,6 @@ class UsbCamera(CameraSource):
         if self.fps:
             cap.set(cv2.CAP_PROP_FPS, self.fps)
         return cap
-
-
 class RtspCamera(CameraSource):
     """Network stream. Must be drained continuously, so use it threaded.
 
@@ -121,27 +117,7 @@ class RtspCamera(CameraSource):
             "appsink sync=false drop=true max-buffers=1")
         return cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
 
-
-class FileCamera(CameraSource):
-    """Video file or image sequence. Useful for replaying a recorded run."""
-
-    def __init__(self, path, loop=True):
-        super().__init__()
-        self.path = path
-        self.loop = loop
-
-    def __str__(self):
-        return f"FileCamera({self.path})"
-
-    def _open(self):
-        return cv2.VideoCapture(self.path)
-
-    def _grab(self):
-        ok, frame = self.cap.read()
-        if not ok and self.loop:
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ok, frame = self.cap.read()
-        return (ok, frame) if ok else (False, None)
+    
 
 
 class ThreadedCamera:
@@ -153,8 +129,8 @@ class ThreadedCamera:
       - RTSP must be drained continuously or the stream falls behind and
         eventually drops.
 
-    read() returns (False, None) when no frame has arrived since the last call,
-    which lets the caller skip a cycle instead of reprocessing an old frame.
+    read() returns (False, None, 0.0) when no frame has arrived since the last
+    call, which lets the caller skip a cycle instead of reprocessing an old one.
     """
 
     def __init__(self, source, reconnect_delay=2.0):
@@ -243,8 +219,6 @@ def make_source(source, width=None, height=None, **kwargs):
         return UsbCamera(int(text), width, height,
                          **{k: v for k, v in kwargs.items()
                             if k in ("fourcc", "fps")})
-    return FileCamera(text, **{k: v for k, v in kwargs.items() if k in ("loop",)})
-
 
 def open_camera(source, width=None, height=None, threaded=True, **kwargs):
     """Build, wrap and start a camera source. Returns the started object."""
@@ -253,3 +227,20 @@ def open_camera(source, width=None, height=None, threaded=True, **kwargs):
     if isinstance(src, RtspCamera):
         threaded = True
     return (ThreadedCamera(src).start() if threaded else src.start())
+
+
+if __name__ == "__main__":
+    # camera = UsbCamera(2)
+    # cap = camera._open()
+    # while True:
+    #     ret, frame = cap.read()
+    #     if ret:
+    #         cv2.imshow("camera", frame)
+
+    s = "   xin chao   "
+    print(repr(s.strip()))      # 'xin chao'      cắt cả hai đầu
+    print(repr(s.lstrip()))     # 'xin chao   '   chỉ cắt trái
+    print(repr(s.rstrip()))     # '   xin chao'   chỉ cắt phải
+
+
+       

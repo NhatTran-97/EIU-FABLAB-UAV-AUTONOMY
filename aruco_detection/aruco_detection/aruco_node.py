@@ -37,13 +37,13 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 import numpy as np
 from std_msgs.msg import Bool, Float32, Int32
 
-from aruco_detection.calibration import (fit_camera_matrix, load_calibration,
-                                         parse_size)
+from aruco_detection.calibration import (fit_camera_matrix, load_calibration, parse_size)
 from aruco_detection.detector import MarkerDetector
 from aruco_detection.load_camera import open_camera
 from aruco_detection.geometry import rotmat_to_quat
 from aruco_detection import visualization as viz
 from rclpy.duration import Duration
+
 try:
     from cv_bridge import CvBridge
 except ImportError:
@@ -66,8 +66,7 @@ class ArucoPoseNode(Node):
 
         rate = self.get_parameter("publish_rate").value
         self.create_timer(1.0 / rate, self.on_timer)
-        self.get_logger().info(
-            f"Ready: {self.detector_type}, marker {self.marker_size * 100:.1f}cm, "
+        self.get_logger().info(f"Ready: {self.detector_type}, marker {self.marker_size * 100:.1f}cm, "
             f"{self.marker_family}, target_id={self.target_id}, "
             f"frame_id '{self.frame_id}', poll {rate:.0f}Hz")
 
@@ -84,18 +83,18 @@ class ArucoPoseNode(Node):
         self.declare_parameter("calib_file", self._default_calib_path())
         self.declare_parameter("calib_side", "left")
         self.declare_parameter("calib_size", "")
-        self.declare_parameter("marker_size", 0.267)
-        self.declare_parameter("detector_type", "aruco")
+        self.declare_parameter("marker_size", 0.281) # 0.281 0.267
+        self.declare_parameter("detector_type", "fractal") # aruco  fractal
         self.declare_parameter("dictionary", "DICT_4X4_50")
         self.declare_parameter("fractal_config", "FRACTAL_5L_6")
-        self.declare_parameter("target_id", 1)   # -1 = nhan moi marker
+        self.declare_parameter("target_id", -1)   # -1 = nhan moi marker
         self.declare_parameter("frame_id", "camera_optical_frame")
         self.declare_parameter("use_ssr", False)
         self.declare_parameter("ambiguity_warn", 0.7)
 
         # Poll NHANH HON camera: hai dong ho 30Hz khong dong bo, khi hai frame
         # ve giua hai lan poll thi frame dau bi ghi de va mat luon.
-        self.declare_parameter("publish_rate", 60.0)
+        self.declare_parameter("publish_rate", 30.0)
         # Do tre TRUOC khi frame toi read(): jitter buffer RTSP + giai ma.
         # Do bang cach chia camera vao dong ho bam giay.
         self.declare_parameter("pipeline_latency_s", 0.0)
@@ -103,19 +102,16 @@ class ArucoPoseNode(Node):
         self.declare_parameter("camera_timeout_s", 1.0)
 
         self.declare_parameter("publish_debug_image", False)
-        # Anh 1080p ~6MB/message; publish moi frame o 30Hz la 180MB/s qua DDS.
-        self.declare_parameter("debug_image_every", 6)
-        # BEST_EFFORT hop voi luong sensor 30Hz va khop QoS cua px4_msgs,
-        # nhung "ros2 topic hz" tren Humble khong doc duoc no. Bat len de
-        # debug bang cong cu chuan.
+        # Publish moi frame mac dinh de luong debug bam sat camera (~30 FPS).
+        # Voi anh lon/RTSP co the tang gia tri nay de giam bang thong DDS.
+        self.declare_parameter("debug_image_every", 1)
         self.declare_parameter("use_reliable_qos", False)
 
         p = self.get_parameter
         self.marker_size = p("marker_size").value
         self.detector_type = str(p("detector_type").value).lower()
         if self.detector_type not in ("aruco", "fractal"):
-            raise RuntimeError(f"detector_type phai la 'aruco' hoac 'fractal' "
-                               f"(nhan duoc: {self.detector_type})")
+            raise RuntimeError(f"detector_type phai la 'aruco' hoac 'fractal' " f"(nhan duoc: {self.detector_type})")
 
         target = p("target_id").value
         self.target_id = None if target < 0 else target
@@ -129,10 +125,8 @@ class ArucoPoseNode(Node):
     def _load_calibration(self):
         p = self.get_parameter
         self.camera_matrix, self.dist_coeffs, self.calib_size = load_calibration(
-            p("calib_file").value, p("calib_side").value,
-            parse_size(p("calib_size").value))
-        self.get_logger().info(
-            f"Calibration {p('calib_file').value} [{p('calib_side').value}] "
+            p("calib_file").value, p("calib_side").value,parse_size(p("calib_size").value))
+        self.get_logger().info(f"Calibration {p('calib_file').value} [{p('calib_side').value}] "
             f"@ {self.calib_size[0]}x{self.calib_size[1]}")
 
     def _setup_camera(self):
@@ -149,11 +143,9 @@ class ArucoPoseNode(Node):
         # phan giai, ma van trong hoan toan hop ly.
         frame_size = self.cam.resolution
         if frame_size != self.calib_size:
-            self.get_logger().warn(
-                f"Camera tra {frame_size[0]}x{frame_size[1]} thay vi "
+            self.get_logger().warn(f"Camera tra {frame_size[0]}x{frame_size[1]} thay vi "
                 f"{self.calib_size[0]}x{self.calib_size[1]} da hieu chuan")
-        self.camera_matrix = fit_camera_matrix(self.camera_matrix,
-                                               self.calib_size, frame_size)
+        self.camera_matrix = fit_camera_matrix(self.camera_matrix,self.calib_size, frame_size)
 
     def _setup_detector(self):
         p = self.get_parameter
@@ -180,6 +172,7 @@ class ArucoPoseNode(Node):
         self.get_logger().info(f"QoS: {'RELIABLE' if reliable else 'BEST_EFFORT'}")
 
         self.pub_pose = self.create_publisher(PoseStamped, "~/pose", qos)
+
         self.pub_detected = self.create_publisher(Bool, "~/detected", qos)
         self.pub_marker_id = self.create_publisher(Int32, "~/marker_id", qos)
         self.pub_ambiguity = self.create_publisher(Float32, "~/ambiguity", qos)
@@ -205,11 +198,14 @@ class ArucoPoseNode(Node):
             return os.path.join(os.path.dirname(os.path.abspath(__file__)),"calib_data_mono.json")
 
     def on_timer(self):
+
         t0 = time.perf_counter()
         ok, frame, t_capture = self.cam.read()
+
         if not ok:
             self._check_camera_alive()
             return
+        
         self._last_frame_wall = time.monotonic()
         self.n_frame += 1
 
@@ -221,7 +217,9 @@ class ArucoPoseNode(Node):
         self._last_cb = t0
 
         age = time.monotonic() - t_capture + self.pipeline_latency
+
         stamp = (self.get_clock().now() - Duration(seconds=age)).to_msg()
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         t_det0 = time.perf_counter()
         detections = self.detector.process(gray, self.target_id)

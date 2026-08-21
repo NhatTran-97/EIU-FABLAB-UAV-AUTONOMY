@@ -105,6 +105,7 @@ class MarkerDetector:
 
         self.detect = None
         self.fractal_detector = None
+
         if self.detector_type == "aruco":
             if dict_id is None:
                 raise RuntimeError("dict_id is required for ArUco detection")
@@ -126,9 +127,16 @@ class MarkerDetector:
     def process(self, gray, target_id=None):
         """Return list[Detection], filtered by target_id when given."""
         image = ssr(gray) if self.use_ssr else gray
+
+
         if self.detector_type == "fractal":
             return self._process_fractal(image, target_id)
         return self._process_aruco(image, target_id)
+
+
+
+
+    
 
     def _process_aruco(self, image, target_id):
         corners, ids, _ = self.detect(image)
@@ -184,3 +192,9 @@ class MarkerDetector:
             ambiguity=None,
             reprojection_error=float(reprojection_error),
         )]
+
+
+
+
+if __name__ == "__main__":
+    MarkerDetector()

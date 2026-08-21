@@ -7,7 +7,9 @@ publish setpoint. Nho vay no chay lai duoc tu rosbag ma khong can drone.
 
 Subscribes
     <marker_pose_topic>  geometry_msgs/PoseStamped  tvec trong he quang hoc
-    <mavros_pose_topic>  geometry_msgs/PoseStamped  /mavros/local_position/pose (ENU)
+    attitude, mot trong hai (tham so attitude_source):
+      local_position     geometry_msgs/PoseStamped  /mavros/local_position/pose
+      imu                sensor_msgs/Imu            /mavros/imu/data
 
 Publishes
     ~/marker_rel    geometry_msgs/PointStamped  marker so voi drone, ENU, da khu nghieng
@@ -16,8 +18,12 @@ Publishes
     ~/valid         std_msgs/Bool               co pose dung khong
 
 Chay:
+    # Ngoai troi / co uoc luong vi tri
+    ros2 run aruco_detection marker_localizer_node.py
+
+    # Trong nha, khong GPS -- du de hieu chuan goc lap camera
     ros2 run aruco_detection marker_localizer_node.py --ros-args \
-        -p mount_pitch_deg:=0.0 -p cam_offset:='[0.10, 0.0, -0.05]'
+        -p attitude_source:=imu
 """
 import math
 import time
@@ -25,6 +31,7 @@ from collections import deque
 
 import rclpy
 from geometry_msgs.msg import PointStamped, PoseStamped
+from sensor_msgs.msg import Imu
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, Float32
@@ -43,6 +50,13 @@ class MarkerLocalizer(Node):
 
         self.declare_parameter("marker_pose_topic", "/aruco_pose_node/pose")
         self.declare_parameter("mavros_pose_topic", "/mavros/local_position/pose")
+        self.declare_parameter("imu_topic", "/mavros/imu/data")
+        # "local_position" can EKF co uoc luong vi tri -- trong nha khong GPS
+        # thi topic do co the im lang hoan toan.
+        # "imu" chi lay attitude, coi vi tri drone la goc. Du cho ~/marker_rel
+        # va ~/height (hai thu quan trong nhat), nhung ~/marker_pose khi do la
+        # TUONG DOI so voi drone chu khong con la toa do tuyet doi.
+        self.declare_parameter("attitude_source", "local_position")
         self.declare_parameter("map_frame_id", "map")
         self.declare_parameter("level_frame_id", "base_link_level")
 
@@ -74,11 +88,9 @@ class MarkerLocalizer(Node):
         self.marker_timeout = float(p("marker_timeout_s").value)
 
         offset = list(p("cam_offset").value)
-        self.extrinsic = CameraExtrinsic(
-            mount_roll=float(p("mount_roll_deg").value),
-            mount_pitch=float(p("mount_pitch_deg").value),
-            mount_yaw=float(p("mount_yaw_deg").value),
-            offset=offset)
+        self.extrinsic = CameraExtrinsic(mount_roll=float(p("mount_roll_deg").value),
+                                         mount_pitch=float(p("mount_pitch_deg").value),
+                                         mount_yaw=float(p("mount_yaw_deg").value), offset=offset)
 
         reliable = p("use_reliable_qos").value
         qos = QoSProfile(depth=10, reliability=(ReliabilityPolicy.RELIABLE if reliable
@@ -88,11 +100,19 @@ class MarkerLocalizer(Node):
         self._attitude = deque()
         self._last_marker = None      # time.monotonic() cua pose hop le cuoi
 
-        self.create_subscription(PoseStamped, p("mavros_pose_topic").value,
-                                 self.on_mavros_pose, qos)
-        self.create_subscription(PoseStamped, p("marker_pose_topic").value,
-                                 self.on_marker_pose, qos)
+        self.attitude_source = str(p("attitude_source").value).lower()
 
+        if self.attitude_source == "imu":
+            self.create_subscription(Imu, p("imu_topic").value, self.on_imu, qos)
+            self.get_logger().warn( f"attitude_source=imu ({p('imu_topic').value}): ~/marker_rel va "
+                "~/height dung, nhung ~/marker_pose la TUONG DOI so voi drone")
+            
+        elif self.attitude_source == "local_position":
+            self.create_subscription(PoseStamped, p("mavros_pose_topic").value,self.on_mavros_pose, qos)
+        else:
+            raise RuntimeError("attitude_source phai la 'local_position' hoac " f"'imu' (nhan duoc: {self.attitude_source})")
+        
+        self.create_subscription(PoseStamped, p("marker_pose_topic").value,self.on_marker_pose, qos)
         self.pub_rel = self.create_publisher(PointStamped, "~/marker_rel", qos)
         self.pub_pose = self.create_publisher(PoseStamped, "~/marker_pose", qos)
         self.pub_height = self.create_publisher(Float32, "~/height", qos)
@@ -108,14 +128,20 @@ class MarkerLocalizer(Node):
 
     # ------------------------------------------------------------------
     def on_mavros_pose(self, msg):
-        t = stamp_to_sec(msg.header.stamp)
         q = msg.pose.orientation
         pos = msg.pose.position
-        self._attitude.append((t, (q.x, q.y, q.z, q.w), (pos.x, pos.y, pos.z)))
+        self._push_attitude(stamp_to_sec(msg.header.stamp),(q.x, q.y, q.z, q.w), (pos.x, pos.y, pos.z))
+        
 
+    def _push_attitude(self, t, q_xyzw, drone_pos):
+        self._attitude.append((t, q_xyzw, drone_pos))
         cutoff = t - self.buffer_s
         while self._attitude and self._attitude[0][0] < cutoff:
             self._attitude.popleft()
+
+    def on_imu(self, msg):
+        q = msg.orientation
+        self._push_attitude(stamp_to_sec(msg.header.stamp),(q.x, q.y, q.z, q.w), (0.0, 0.0, 0.0))
 
     def _lookup(self, t):
         """Mau attitude gan t nhat, hoac None neu qua cu / chua co."""
@@ -127,13 +153,13 @@ class MarkerLocalizer(Node):
     def on_marker_pose(self, msg):
         # Bu do tre: pose mang dau thoi diem XU LY, canh anh duoc CHUP som hon
         t_capture = stamp_to_sec(msg.header.stamp) - self.camera_latency
-
         sample = self._lookup(t_capture)
+
         if sample is None:
             self.pub_valid.publish(Bool(data=False))
             self.get_logger().warn(
-                "Khong co attitude khop timestamp -> bo pose "
-                f"(buffer {len(self._attitude)} mau)", throttle_duration_sec=2.0)
+                "Khong co attitude khop timestamp -> bo pose " f"(buffer {len(self._attitude)} mau)", 
+                throttle_duration_sec=2.0)
             return
 
         _, q_xyzw, drone_pos = sample
@@ -170,7 +196,6 @@ class MarkerLocalizer(Node):
 
     def _check_marker_fresh(self):
         """Khong co pose moi trong marker_timeout -> bao mat marker.
-
         ~/valid=False co HAI nguyen nhan khac han nhau, va bo dieu khien phai
         xu ly khac nhau: mat marker (khuat tam nhin, thuong tam thoi) va mat
         attitude (MAVROS co van de, nghiem trong hon nhieu).
