@@ -130,14 +130,18 @@ class MarkerLocalizer(Node):
     def on_mavros_pose(self, msg):
         q = msg.pose.orientation
         pos = msg.pose.position
-        self._push_attitude(stamp_to_sec(msg.header.stamp),(q.x, q.y, q.z, q.w), (pos.x, pos.y, pos.z))
+        self._push_attitude(stamp_to_sec(msg.header.stamp),
+                            (q.x, q.y, q.z, q.w), 
+                            (pos.x, pos.y, pos.z))
         
 
     def _push_attitude(self, t, q_xyzw, drone_pos):
         self._attitude.append((t, q_xyzw, drone_pos))
+
         cutoff = t - self.buffer_s
         while self._attitude and self._attitude[0][0] < cutoff:
             self._attitude.popleft()
+        
 
     def on_imu(self, msg):
         q = msg.orientation
@@ -147,12 +151,15 @@ class MarkerLocalizer(Node):
         """Mau attitude gan t nhat, hoac None neu qua cu / chua co."""
         if not self._attitude:
             return None
+     
         best = min(self._attitude, key=lambda s: abs(s[0] - t))
+
         return best if abs(best[0] - t) <= self.max_attitude_age else None
 
     def on_marker_pose(self, msg):
-        # Bu do tre: pose mang dau thoi diem XU LY, canh anh duoc CHUP som hon
-        t_capture = stamp_to_sec(msg.header.stamp) - self.camera_latency
+        #Bu do tre: pose mang dau thoi diem XU LY, canh anh duoc CHUP som hon
+        
+        t_capture = stamp_to_sec(msg.header.stamp) #- self.camera_latency
         sample = self._lookup(t_capture)
 
         if sample is None:
@@ -163,7 +170,11 @@ class MarkerLocalizer(Node):
             return
 
         _, q_xyzw, drone_pos = sample
+
         t = msg.pose.position
+
+
+
         p_rel, _ = marker_relative_enu((t.x, t.y, t.z), q_xyzw, self.extrinsic)
         self._last_marker = time.monotonic()
 

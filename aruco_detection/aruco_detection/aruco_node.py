@@ -167,9 +167,9 @@ class ArucoPoseNode(Node):
 
     def _setup_publishers(self):
         reliable = self.get_parameter("use_reliable_qos").value
-        qos = QoSProfile(depth=1, reliability=(ReliabilityPolicy.RELIABLE if reliable
-                                               else ReliabilityPolicy.BEST_EFFORT))
-        self.get_logger().info(f"QoS: {'RELIABLE' if reliable else 'BEST_EFFORT'}")
+        
+        qos = QoSProfile(depth=1, reliability=(ReliabilityPolicy.BEST_EFFORT))
+
 
         self.pub_pose = self.create_publisher(PoseStamped, "~/pose", qos)
 
