@@ -29,6 +29,7 @@ import math
 import time
 from collections import deque
 
+import numpy as np
 import rclpy
 from geometry_msgs.msg import PointStamped, PoseStamped
 from sensor_msgs.msg import Imu
@@ -36,8 +37,8 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, Float32
 
-from aruco_detection.geometry import (CameraExtrinsic, marker_relative_enu,
-                                      marker_yaw_enu, quat_to_rotmat)
+from aruco_detection.geometry import (CameraExtrinsic, marker_yaw_enu,
+                                      quat_to_rotmat)
 
 
 def stamp_to_sec(stamp):
@@ -93,8 +94,7 @@ class MarkerLocalizer(Node):
                                          mount_yaw=float(p("mount_yaw_deg").value), offset=offset)
 
         reliable = p("use_reliable_qos").value
-        qos = QoSProfile(depth=10, reliability=(ReliabilityPolicy.RELIABLE if reliable
-                                                else ReliabilityPolicy.BEST_EFFORT))
+        qos = QoSProfile(depth=10, reliability=(ReliabilityPolicy.BEST_EFFORT))
 
         # (t, (qx, qy, qz, qw), (x, y, z)) theo thu tu thoi gian tang dan
         self._attitude = deque()
@@ -164,18 +164,33 @@ class MarkerLocalizer(Node):
 
         if sample is None:
             self.pub_valid.publish(Bool(data=False))
-            self.get_logger().warn(
-                "Khong co attitude khop timestamp -> bo pose " f"(buffer {len(self._attitude)} mau)", 
+            self.get_logger().warn("Khong co attitude khop timestamp -> bo pose " f"(buffer {len(self._attitude)} mau)",
                 throttle_duration_sec=2.0)
             return
 
         _, q_xyzw, drone_pos = sample
 
         t = msg.pose.position
+        # Viet tuong minh phep bien doi vi tri marker:
+        #
+        #   camera optical -> body FLU -> world ENU
+        #
+        # 1) tvec la vi tri marker so voi camera, trong he quang hoc:
+        #    x sang phai anh, y xuong anh, z theo truc quang hoc.
+        p_cam = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z], dtype=float)
 
+        # 2) Doi vector camera sang he than FLU va cong tay don camera.
+        #    R_flu_from_cam da gom phep quay camera nhin xuong va sai so goc lap.
+        
+        p_body_flu = (self.extrinsic.R_flu_from_cam @ p_cam + self.extrinsic.offset)
 
+        # 3) Quaternion MAVROS [x, y, z, w] -> ma tran quay body FLU sang ENU.
+        #    Day la attitude cua drone tai thoi diem frame camera duoc chup.
+        R_enu_from_flu = quat_to_rotmat(*q_xyzw)
 
-        p_rel, _ = marker_relative_enu((t.x, t.y, t.z), q_xyzw, self.extrinsic)
+        # 4) Quay vector dang bam theo than drone sang he ENU bam theo mat dat.
+        #    Buoc nay loai anh huong roll/pitch cua drone khoi vi tri marker.
+        p_rel = R_enu_from_flu @ p_body_flu
         self._last_marker = time.monotonic()
 
         header_level = msg.header
