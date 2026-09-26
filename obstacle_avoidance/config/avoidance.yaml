@@ -1,0 +1,54 @@
+# Tham so khoi diem cho obstacle_avoidance. Chinh tren SITL truoc khi bay that.
+obstacle_avoidance:
+  ros__parameters:
+    scan_topic: /scan
+    local_position_topic: /fmu/out/vehicle_local_position_v1
+    attitude_topic: /fmu/out/vehicle_attitude
+
+    # ---- Lap dat lidar ----
+    # Goc cua truc x lidar so voi mui drone (FLU, duong = quay trai). KIEM TRA BANG TEST TINH.
+    lidar_yaw_offset_deg: 0.0
+    lidar_upside_down: false
+    min_range: 0.3            # m, bo diem gan hon (canh quat)
+    max_range: 12.0           # m
+    # Cung goc bi chan/khung che, theo goc THO cua /scan (do), "a:b, c:d". Rong = khong che.
+    self_mask_deg: ""
+    despeckle_tol: 0.3        # m, 0 = tat loc nhieu 1 tia
+
+    # ---- Loc tia cham dat khi drone nghieng ----
+    ground_filter: true
+    ground_margin: 0.3        # m
+    ground_z: 0.0             # z NED cua mat dat khi PX4 khong co dist_bottom (0 = mat dat noi cat canh)
+
+    # ---- VFH+ ----
+    sector_deg: 5.0
+    window_radius: 8.0        # m
+    drone_radius: 0.5         # m, tinh ca canh quat
+    safety_margin: 1.0        # m
+    block_distance: 3.0       # m, > drone_radius + safety_margin; chi quyet dinh ne SOM hay MUON
+    free_distance: 3.5        # m, hysteresis mo lai sector
+    wide_valley_sectors: 8
+    min_valley_sectors: 1
+    mu_goal: 5.0              # phai > mu_motion + mu_prev
+    mu_motion: 2.0
+    mu_prev: 2.0
+
+    # ---- Hang so vat ly: ROS KHONG do duoc, phai khop voi PX4 ----
+    # Toc do KHONG dat tay: moi scan tinh v lon nhat thoa  v*T + v^2/(2*max_decel) <= quang trong,
+    # voi T = do tre DO DUOC (scan -> status) + actuation_latency. Carrot = v / px4_xy_p.
+    max_speed: 2.0            # m/s, tran tren, <= MPC_XY_VEL_MAX
+    max_decel: 2.0            # m/s^2, than trong hon MPC_ACC_HOR (mac dinh PX4 3.0)
+    px4_xy_p: 0.95            # = MPC_XY_P tren PX4
+    actuation_latency: 0.15   # s, tu luc publish status toi luc PX4 bat dau phanh (manager/offboard da event-driven)
+    motion_speed_threshold: 0.3   # m/s, duoi muc nay coi nhu dung yen (khong xet quan tinh)
+
+    # ---- Timing: KHONG co tan so nao o day, tat ca do luc chay ----
+    # timeout moi input = timeout_periods * p90(chu ky do duoc), kep boi max_timeout.
+    # Chua du mau thi dung LaserScan.scan_time, khong co nua thi dung max_timeout.
+    timeout_periods: 3.0
+    max_timeout: 1.0          # s, mu lau hon muc nay luon la STALE (dong thoi la do tre gia dinh luc khoi dong)
+    diagnostics_period: 5.0   # s, chu ky log [diag] tan so / do tre / toc do cho phep
+
+    start_enabled: false      # mission_manager bat qua /avoidance/enable
+    # Lop an toan thu 2: day /fmu/in/obstacle_distance cho PX4 Collision Prevention (CP_DIST).
+    publish_obstacle_distance: false
