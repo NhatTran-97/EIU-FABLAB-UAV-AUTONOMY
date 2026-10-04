@@ -1,0 +1,14 @@
+singleton Theme 1.0 Theme.qml
+StatusCard 1.0 StatusCard.qml
+TopBar 1.0 TopBar.qml
+NavBar 1.0 NavBar.qml
+LinkPanel 1.0 LinkPanel.qml
+PrefetchPanel 1.0 PrefetchPanel.qml
+WaypointPanel 1.0 WaypointPanel.qml
+FlightCommands 1.0 FlightCommands.qml
+AttitudeIndicator 1.0 AttitudeIndicator.qml
+CompassDial 1.0 CompassDial.qml
+InstrumentPanel 1.0 InstrumentPanel.qml
+Axes3D 1.0 Axes3D.qml
+TelemetryCard 1.0 TelemetryCard.qml
+Splash 1.0 Splash.qml

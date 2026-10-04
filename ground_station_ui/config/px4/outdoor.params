@@ -1,0 +1,48 @@
+# Onboard parameters for Vehicle 1 -- OUTDOOR (co GPS): GPS chinh, MTF-02 ho tro khi bay thap
+#
+# QGC: Vehicle Setup -> Parameters -> Tools -> Load from file -> chon file nay -> Reboot.
+# Truoc khi bay: GPS fix 3D, Home hien dung tren ban do, Geofence da dat (tab Safety).
+# RTL_RETURN_ALT: cao hon vat can cao nhat quanh khu bay.
+#
+# PX4 1.17: MAV_PROTO_VER=1 bat buoc -- MTF-02 can heartbeat MAVLink v1 de tu nhan dien PX4
+#   (=0 hay =2 thi PX4 nhan byte nhung khong doc duoc message). SiK/QGC van tu len v2.
+#
+# Vehicle-Id	Component-Id	Name	Value	Type
+# --- MTF-02 van cam tren TELEM3 ---
+1	1	MAV_1_CONFIG	103	6
+1	1	MAV_1_MODE	0	6
+1	1	MAV_PROTO_VER	1	6
+1	1	SER_TEL3_BAUD	115200	6
+1	1	SENS_FLOW_ROT	0	6
+# --- Vi tri MTF-02 so voi flight controller (goc): lui 6 cm, lech phai 3.5 cm, thap hon 10.5 cm ---
+1	1	EKF2_OF_POS_X	-0.059999998658895493	9
+1	1	EKF2_OF_POS_Y	0.035000000149011612	9
+1	1	EKF2_OF_POS_Z	0.104999996721744537	9
+1	1	EKF2_RNG_POS_X	-0.059999998658895493	9
+1	1	EKF2_RNG_POS_Y	0.035000000149011612	9
+1	1	EKF2_RNG_POS_Z	0.035000000149011612	9
+# ^ EKF2_RNG_POS_Z = 0.105 (vi tri that) - 0.07: bu MTF-02 do du ~7 cm (thuoc 0.81/0.91 -> cam bien 0.88/0.98)
+# --- EKF2: GPS + baro chinh; flow + range chi dung khi bay thap / cham ---
+1	1	EKF2_GPS_CTRL	7	6
+1	1	EKF2_OF_CTRL	1	6
+1	1	EKF2_RNG_CTRL	1	6
+1	1	EKF2_HGT_REF	0	6
+1	1	EKF2_BARO_CTRL	1	6
+# --- Do cao cat canh mac dinh ---
+1	1	MIS_TAKEOFF_ALT	5.000000000000000000	9
+# --- Failsafe ngoai troi: ve Home ---
+1	1	NAV_RCL_ACT	2	6
+1	1	NAV_DLL_ACT	2	6
+1	1	COM_LOW_BAT_ACT	3	6
+1	1	RTL_RETURN_ALT	20.000000000000000000	9
+1	1	RTL_LAND_DELAY	0.000000000000000000	9
+# --- Geofence (can GPS) ---
+1	1	GF_ACTION	2	6
+1	1	GF_MAX_HOR_DIST	30.000000000000000000	9
+1	1	GF_MAX_VER_DIST	20.000000000000000000	9
+# --- Pin 4S LiPo, Power Module ---
+1	1	BAT1_N_CELLS	4	6
+1	1	BAT1_V_EMPTY	3.599999904632568359	9
+1	1	BAT1_V_CHARGED	4.199999809265136719	9
+1	1	BAT1_V_DIV	18.447069168090820312	9
+1	1	BAT1_A_PER_V	36.367515563964843750	9

@@ -1,0 +1,48 @@
+# Onboard parameters for Vehicle 1 -- INDOOR (khong GPS): MTF-02 optical flow + range tren TELEM3
+#
+# QGC: Vehicle Setup -> Parameters -> Tools -> Load from file -> chon file nay -> Reboot.
+# Lan dau: SER_TEL3_BAUD chi xuat hien SAU khi MAV_1_CONFIG=TELEM3 + reboot
+#          -> load file, reboot, load LAI lan 2, reboot.
+# Kiem tra truoc: MAV_1_CONFIG chua bi dung cho thiet bi khac (Jetson uXRCE thuong o TELEM2).
+# EKF2_MIN_RNG = 0.19: so MTF-02 doc khi drone dat tren san (thuc te 17 cm, sai so +-2 cm).
+#
+# PX4 1.17: MAV_PROTO_VER=1 bat buoc -- MTF-02 can heartbeat MAVLink v1 de tu nhan dien PX4
+#   (=0 hay =2 thi PX4 nhan byte nhung khong doc duoc message). SiK/QGC van tu len v2.
+#
+# Vehicle-Id	Component-Id	Name	Value	Type
+# --- MTF-02 tren TELEM3 (MAVLink, 115200) ---
+1	1	MAV_1_CONFIG	103	6
+1	1	MAV_1_MODE	0	6
+1	1	MAV_PROTO_VER	1	6
+1	1	SER_TEL3_BAUD	115200	6
+1	1	SENS_FLOW_ROT	0	6
+1	1	SENS_FLOW_MAXHGT	2.299999952316284180	9
+1	1	SENS_FLOW_MINHGT	0.080000000000000002	9
+# --- Vi tri MTF-02 so voi flight controller (goc): lui 6 cm, lech phai 3.5 cm, thap hon 10.5 cm ---
+1	1	EKF2_OF_POS_X	-0.059999998658895493	9
+1	1	EKF2_OF_POS_Y	0.035000000149011612	9
+1	1	EKF2_OF_POS_Z	0.104999996721744537	9
+1	1	EKF2_RNG_POS_X	-0.059999998658895493	9
+1	1	EKF2_RNG_POS_Y	0.035000000149011612	9
+1	1	EKF2_RNG_POS_Z	0.035000000149011612	9
+# ^ EKF2_RNG_POS_Z = 0.105 (vi tri that) - 0.07: bu MTF-02 do du ~7 cm (thuoc 0.81/0.91 -> cam bien 0.88/0.98)
+# --- EKF2: vi tri tu optical flow, do cao tu range sensor, tat GPS ---
+1	1	EKF2_GPS_CTRL	0	6
+1	1	EKF2_OF_CTRL	1	6
+1	1	EKF2_RNG_CTRL	2	6
+1	1	EKF2_HGT_REF	2	6
+1	1	EKF2_BARO_CTRL	1	6
+1	1	EKF2_MIN_RNG	0.189999997615814209	9
+1	1	COM_ARM_WO_GPS	1	6
+# --- Cat canh 1.5 m; tran do cao 2.3 m (tam do MTF-02 = 2.5 m) ---
+1	1	MIS_TAKEOFF_ALT	1.500000000000000000	9
+# --- Failsafe trong nha: RTL vo nghia (khong GPS) -> Land ---
+1	1	NAV_RCL_ACT	3	6
+1	1	NAV_DLL_ACT	3	6
+1	1	COM_LOW_BAT_ACT	2	6
+# --- Pin 4S LiPo, Power Module ---
+1	1	BAT1_N_CELLS	4	6
+1	1	BAT1_V_EMPTY	3.599999904632568359	9
+1	1	BAT1_V_CHARGED	4.199999809265136719	9
+1	1	BAT1_V_DIV	18.447069168090820312	9
+1	1	BAT1_A_PER_V	36.367515563964843750	9

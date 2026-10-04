@@ -1,0 +1,104 @@
+# Cau hinh Drone GCS. Them / bot link o day, khong can sua code.
+#   type: serial  -> port, baud  (cong chon trong tab Links duoc ghi nho, de trong o day)
+#   type: udp     -> listen "host:port"
+#   heartbeat_v1: radio SiK 1.9 chi chen RADIO_STATUS (RSSI) khi thay heartbeat MAVLink v1
+#   enabled: false -> bo qua link
+
+ui_rate_hz: 5            # tan so cap nhat giao dien
+
+# Ban do OFFLINE: o ban do luu trong file .mbtiles (SQLite). Co mang -> o chua co se duoc tai
+# va luu lai; mat mang -> dung cache. Tai truoc vung bay: tab Map -> "Tai vung offline".
+#   url:     nguon online ({z} {x} {y}); de trong = lop chi offline (vd anh drone tu chup)
+#   file:    ten file .mbtiles trong cache_dir (mac dinh <id>.mbtiles)
+#   compose: lop ghep tu cac lop khac [nen, overlay...] (vd Hybrid); hidden: an khoi nut chon lop
+#   Lop dau tien = lop mac dinh khi mo app
+# Luu y dieu khoan: cac nguon thuong mai (Esri, Google, Bing) han che tai hang loat.
+map:
+  cache_dir: data/maps                    # tuong doi = trong package (chep package la mang theo map)
+  default_center: [10.8231, 106.6297]     # khi chua co vi tri drone
+  default_zoom: 16
+  max_prefetch_tiles: 30000
+  layers:
+    # nen = anh Google (net hon Esri o khu bay), nhan duong / dia danh = Esri
+    - id: hybrid
+      title: Hybrid
+      compose: [google_satellite, roads, places]
+      attribution: Google, Esri, HERE, Garmin
+    # Anh Google (cung nguon QGC dung) -- nen cua Hybrid, net + moi hon Esri o khu bay.
+    # Dieu khoan Google khong cho lay o truc tiep nhu nay -- QGC van lam; tu can nhac.
+    - id: google_satellite
+      hidden: true            # chi lam nen cho Hybrid
+      url: https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}
+      max_zoom: 19            # QtLocation tu phong to khi zoom sau hon
+      attribution: Google
+    # Azure Maps (anh Maxar nhu GUI cu) -- can key: export AZURE_MAPS_KEY=... (dat trong ~/.bashrc)
+    # Khong co key -> lop chi doc cache; cache cung trong -> lop bi an
+    - id: azure
+      title: Azure
+      compose: [azure_imagery, azure_roads]
+      attribution: Microsoft, Maxar, TomTom, OpenStreetMap
+    - id: azure_imagery
+      hidden: true
+      url: https://atlas.microsoft.com/map/tile?api-version=2024-04-01&tilesetId=microsoft.imagery&zoom={z}&x={x}&y={y}&tileSize=256&subscription-key={key}
+      key_env: AZURE_MAPS_KEY
+      max_zoom: 19
+    - id: azure_roads           # vien duong + nhan trong suot, ghep len anh ve tinh
+      hidden: true
+      url: https://atlas.microsoft.com/map/tile?api-version=2024-04-01&tilesetId=microsoft.base.hybrid.road&zoom={z}&x={x}&y={y}&tileSize=256&subscription-key={key}
+      key_env: AZURE_MAPS_KEY
+      max_zoom: 22
+    # Hybrid = anh ve tinh + duong + ten duong / dia danh (giong Hybrid cua QGC / Google)
+    # Lop nhan trong suot cua Esri, chi dung de ghep vao Hybrid
+    - id: roads
+      hidden: true
+      url: https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}
+      max_zoom: 19
+    - id: places
+      hidden: true
+      url: https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}
+      max_zoom: 19
+    # Anh drone tu chup (WebODM -> gdal2tiles / rio mbtiles), chi offline:
+    # - id: ortho
+    #   title: Ortho
+    #   file: ortho.mbtiles
+
+# Vung cam / han che bay: chep file .geojson hoac OpenAir (.txt / .openair) vao thu muc duoi day
+# roi bam nut tai lai tren tab Map. Nguon: OpenAIP (vung P/R/D, CTR san bay tu AIP Viet Nam),
+# vung quan su ghi trong giay phep bay -> tu ve bang geojson.io. App chi CANH BAO, khong chan.
+airspace:
+  dirs:
+    - data/airspace                       # trong package
+
+# Lenh bay tu nut Take-off / Land tren tab Map: COMMAND_LONG (NAV_TAKEOFF / NAV_LAND) gui qua
+# link `link` toi Jetson (sysid/compid cua drone_telemetry); cho COMMAND_ACK, het han thi gui lai.
+commands:
+  link: jetson
+  target_system: 1
+  target_component: 191      # MAV_COMP_ID_ONBOARD_COMPUTER (drone_telemetry)
+  ack_timeout_s: 1.5
+  retries: 3
+  takeoff_altitude_indoor: 1.5    # m, mac dinh trong hop xac nhan -- khop indoor.params (tran 2.3 m)
+  takeoff_altitude_outdoor: 5      # m -- khop outdoor.params
+
+mission:
+  default_altitude: 20     # m, do cao mac dinh cua waypoint moi
+
+links:
+  - name: px4
+    title: PX4
+    hint: radio SiK 915 MHz · MAVLink PX4
+    type: serial
+    baud: 57600
+
+  - name: jetson
+    title: Jetson
+    hint: radio SiK 433 MHz · drone_telemetry
+    type: serial
+    baud: 57600
+    heartbeat_v1: true
+
+  - name: sitl
+    title: PX4 SITL
+    hint: mô phỏng trên laptop (make px4_sitl ...)
+    type: udp
+    listen: 0.0.0.0:14550
