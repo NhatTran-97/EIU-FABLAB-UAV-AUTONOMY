@@ -1,3 +1,17 @@
+# ── Python ──
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# ── colcon ──
+build/
+install/
+log/
+
+# ── dau ra cua cong cu ──
+arucoMarkers/
+vector_field_landing.png
+
 user_interface/qt/index/map.html
 user_interface/
 user_interface/
@@ -11,3 +25,5 @@ Robot_Fundamentals/
 
 ground_gui/index/
 script/Miniconda3-latest-Linux-aarch64.sh
+ground_station_ui/config/keys.yaml
+ground_station_ui/data/maps/*.mbtiles
