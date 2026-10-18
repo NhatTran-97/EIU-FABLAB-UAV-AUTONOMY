@@ -20,13 +20,16 @@ Rectangle {
         spacing: 10
 
         RowLayout {
+            Layout.fillWidth: true
             Rectangle {
                 width: 12; height: 12; radius: 6
                 color: panel.info.alive ? Theme.ok : (panel.info.isOpen ? Theme.warn : Theme.idle)
             }
             Text { text: panel.info.title; color: Theme.text; font.pixelSize: 16; font.bold: true }
-            Text { text: panel.info.hint; color: Theme.textDim; font.pixelSize: 12 }
-            Item { Layout.fillWidth: true }
+            Text {                                      // the hep -> cat bot mo ta, giu ten + so lieu
+                text: panel.info.hint; color: Theme.textDim; font.pixelSize: 12
+                Layout.fillWidth: true; Layout.minimumWidth: 0; elide: Text.ElideRight
+            }
             Text {
                 visible: panel.info.isOpen
                 text: panel.info.msgRate + " msg/s"
@@ -37,11 +40,14 @@ Rectangle {
         }
 
         RowLayout {
+            Layout.fillWidth: true
             spacing: 8
             ComboBox {
                 id: portBox
                 visible: panel.isSerial
-                Layout.preferredWidth: 380
+                Layout.fillWidth: true                  // gian theo the; ten cong dai thi cat bot
+                Layout.minimumWidth: 140
+                Layout.maximumWidth: 420
                 model: ports.ports
                 textRole: "label"
                 valueRole: "device"
@@ -91,6 +97,7 @@ Rectangle {
         }
 
         Text {
+            Layout.fillWidth: true; wrapMode: Text.WordWrap
             text: panel.info.status
                   + (panel.info.isOpen && !panel.info.alive ? "  ·  no heartbeat from drone" : "")
             color: Theme.textDim; font.pixelSize: 12

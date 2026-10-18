@@ -1,7 +1,8 @@
 """Cac nhom du lieu cua drone. Moi nhom tu dang ky message minh can (attach) -> them nhom moi
 khong phai sua code cu.
 
-Message cua PX4 chi duoc nhan khi den tu autopilot da nhan dien (vehicle.is_autopilot):
+Message cua PX4 chi duoc nhan khi den tu autopilot da nhan dien tren dung link
+(vehicle.is_autopilot(msg, link)); message DRONE_* chi tu Jetson (vehicle.is_companion):
 tranh lan du lieu cua GCS khac / thiet bi phu tren cung link.
 """
 
@@ -51,7 +52,7 @@ class StatusGroup(_VehicleGroup):
 
     def __init__(self, vehicle):
         super().__init__(vehicle, linkAlive=False, heartbeatAge=-1.0, armed=False,
-                         mode='—', flightTime=0, landed='—', failsafe=False)
+                         mode='—', flightTime=0, landed='—', failsafe=False, source='—')
         self._last_hb = None
         self._armed_at = None
         self._flight_prev = 0.0
@@ -61,15 +62,15 @@ class StatusGroup(_VehicleGroup):
         router.subscribe('EXTENDED_SYS_STATE', self.on_ext_state)
 
     def on_ext_state(self, m, _link):
-        if self.vehicle.is_autopilot(m):
+        if self.vehicle.is_autopilot(m, _link):
             self.set(landed=LANDED.get(m.landed_state, '—'))
 
     def on_heartbeat(self, m, _link):
         if m.autopilot == mavlink.MAV_AUTOPILOT_INVALID or m.type == mavlink.MAV_TYPE_GCS:
             return                       # GCS / companion / thiet bi phu, khong phai autopilot
-        self.vehicle.identify(m.get_srcSystem(), m.get_srcComponent())
-        if not self.vehicle.is_autopilot(m):
-            return
+        if not self.vehicle.identify(m.get_srcSystem(), m.get_srcComponent(), _link):
+            return                       # autopilot khac (SITL / link khong duoc phep / it uu tien)
+        self.set(source=f'{_link} · sys {m.get_srcSystem()}')
         now = time.monotonic()
         self._last_hb = now
         armed = bool(m.base_mode & mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
@@ -110,7 +111,7 @@ class GpsGroup(_VehicleGroup):
         router.subscribe('GLOBAL_POSITION_INT', self.on_position)
 
     def on_gps(self, m, _link):
-        if self.vehicle.is_autopilot(m):
+        if self.vehicle.is_autopilot(m, _link):
             self.set(fix=GPS_FIX.get(m.fix_type, str(m.fix_type)), fixType=m.fix_type,
                      satellites=m.satellites_visible if m.satellites_visible != 255 else 0,
                      # PX4 bao "khong co" bang gia tri dac biet (UINT16/32_MAX, 9999...) khi chua fix
@@ -119,7 +120,7 @@ class GpsGroup(_VehicleGroup):
                      vAcc=_gps_val(getattr(m, 'v_acc', 0), 1000.0, 1000.0) if m.fix_type >= 2 else None)
 
     def on_position(self, m, _link):
-        if self.vehicle.is_autopilot(m):
+        if self.vehicle.is_autopilot(m, _link):
             self.set(lat=m.lat / 1e7, lon=m.lon / 1e7)
 
 
@@ -133,7 +134,7 @@ class HomeGroup(_VehicleGroup):
         router.subscribe('HOME_POSITION', self.on_home)
 
     def on_home(self, m, _link):
-        if self.vehicle.is_autopilot(m):
+        if self.vehicle.is_autopilot(m, _link):
             self.set(valid=True, lat=m.latitude / 1e7, lon=m.longitude / 1e7,
                      alt=round(m.altitude / 1000.0, 1))
 
@@ -146,7 +147,7 @@ class BatteryGroup(_VehicleGroup):
         router.subscribe('SYS_STATUS', self.on_sys_status)
 
     def on_sys_status(self, m, _link):
-        if not self.vehicle.is_autopilot(m):
+        if not self.vehicle.is_autopilot(m, _link):
             return
         self.set(
             percent=m.battery_remaining if m.battery_remaining >= 0 else -1,   # <0: PX4 khong uoc luong
@@ -166,7 +167,7 @@ class SensorsGroup(_VehicleGroup):
         router.subscribe('SYS_STATUS', self.on_sys_status)
 
     def on_sys_status(self, m, _link):
-        if not self.vehicle.is_autopilot(m):
+        if not self.vehicle.is_autopilot(m, _link):
             return
         items = []
         for name, bit in SENSORS:
@@ -198,7 +199,7 @@ class FlightGroup(_VehicleGroup):
 
     def __init__(self, vehicle):
         super().__init__(vehicle, altRel=None, altSource='—', altHome=None, altLocal=None,
-                         altAmsl=None, groundSpeed=None, climbRate=None, heading=None)
+                         altAmsl=None, altGlobal=None, groundSpeed=None, climbRate=None, heading=None)
         self.mode = 'auto'
         self._fix = 0
 
@@ -229,22 +230,23 @@ class FlightGroup(_VehicleGroup):
             self.set(altRel=self.values['altHome'], altSource='home' if self.values['altHome'] is not None else '—')
 
     def on_global(self, m, _link):
-        if self.vehicle.is_autopilot(m):
-            self.set(altHome=round(m.relative_alt / 1000.0, 1))
+        if self.vehicle.is_autopilot(m, _link):
+            # altGlobal: AMSL cua vi tri toan cuc (lenh Take-off gui thang PX4 can AMSL)
+            self.set(altHome=round(m.relative_alt / 1000.0, 1), altGlobal=round(m.alt / 1000.0, 2))
             self._pick()
 
     def on_local(self, m, _link):
-        if self.vehicle.is_autopilot(m):
+        if self.vehicle.is_autopilot(m, _link):
             self.set(altLocal=round(-m.z, 1))
             self._pick()
 
     def on_gps(self, m, _link):
-        if self.vehicle.is_autopilot(m):
+        if self.vehicle.is_autopilot(m, _link):
             self._fix = m.fix_type
             self._pick()
 
     def on_hud(self, m, _link):
-        if self.vehicle.is_autopilot(m):
+        if self.vehicle.is_autopilot(m, _link):
             self.set(groundSpeed=round(m.groundspeed, 1), climbRate=round(m.climb, 1),
                      altAmsl=round(m.alt, 1), heading=m.heading)
 
@@ -259,7 +261,7 @@ class AttitudeGroup(_VehicleGroup):
         router.subscribe('ATTITUDE', self.on_attitude)
 
     def on_attitude(self, m, _link):
-        if not self.vehicle.is_autopilot(m):
+        if not self.vehicle.is_autopilot(m, _link):
             return
         self.set(valid=True,
                  roll=round(math.degrees(m.roll), 1),
@@ -288,6 +290,8 @@ class LocalPoseGroup(_VehicleGroup):
         router.subscribe('DRONE_LOCAL_POSE', self.on_pose)
 
     def on_pose(self, m, _link):
+        if not self.vehicle.is_companion(m, _link):
+            return
         e, n, u = ned_to_enu(m.x, m.y, m.z)
         q = q_ned_frd_to_enu_flu(tuple(m.q))
         if self._reset is not None and m.reset_counter != self._reset:
@@ -324,6 +328,8 @@ class GimbalGroup(_VehicleGroup):
         router.subscribe('DRONE_GIMBAL_STATE', self.on_gimbal)
 
     def on_gimbal(self, m, _link):
+        if not self.vehicle.is_companion(m, _link):
+            return
         self._last = time.monotonic()
         self.set(valid=True, yaw=round(m.yaw, 1), pitch=round(m.pitch, 1), roll=round(m.roll, 1),
                  connected=bool(m.connected), mode='AUTO' if m.control_mode == 1 else 'MANUAL', age_s=0.0)
@@ -342,6 +348,11 @@ class MessagesGroup(_VehicleGroup):
 
     def on_text(self, m, _link):
         if m.get_srcComponent() == mavlink.MAV_COMP_ID_MISSIONPLANNER:
+            return
+        v = self.vehicle
+        # autopilot da chon, Jetson, hoac (chua nhan dien) autopilot tren link duoc phep
+        if not (v.is_autopilot(m, _link) or v.is_companion(m, _link)
+                or (v.sysid is None and v.link_allowed(_link))):
             return
         item = {
             'time': time.strftime('%H:%M:%S'),
@@ -365,11 +376,12 @@ class CompanionGroup(_VehicleGroup):
         router.subscribe('DRONE_COMPONENT_STATUS', self.on_component)
 
     def on_heartbeat(self, m, _link):
-        if m.type == mavlink.MAV_TYPE_ONBOARD_CONTROLLER:
+        if m.type == mavlink.MAV_TYPE_ONBOARD_CONTROLLER and self.vehicle.is_companion(m, _link):
             self._last_hb = time.monotonic()
 
     def on_component(self, m, _link):
-        self._comps[m.component_id] = (time.monotonic(), m)
+        if self.vehicle.is_companion(m, _link):
+            self._comps[m.component_id] = (time.monotonic(), m)
 
     def tick(self, now):
         if self._last_hb is not None:

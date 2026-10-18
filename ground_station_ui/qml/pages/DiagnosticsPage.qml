@@ -16,6 +16,12 @@ ScrollView {
     readonly property var px4Link: links.values.px4 || ({})
     readonly property var jetLink: links.values.jetson || ({})
 
+    // The trang thai gian deu het hang: so cot theo do rong (the toi thieu cardMin), chia deu phan du.
+    readonly property int cardMin: 200
+    readonly property int cardCols: Math.max(1, Math.floor((availableWidth + Theme.gap) / (cardMin + Theme.gap)))
+    readonly property real cardW: Math.floor((availableWidth - (cardCols - 1) * Theme.gap) / cardCols)
+    component Card: StatusCard { width: page.cardW }
+
     component SectionTitle: Text {
         color: Theme.text; font.pixelSize: 16; font.bold: true
         Layout.topMargin: 8
@@ -77,13 +83,13 @@ ScrollView {
             Layout.fillWidth: true
             spacing: Theme.gap
 
-            StatusCard {
+            Card {
                 title: "Flight Controller"
                 status: st.linkAlive ? "ok" : (st.heartbeatAge >= 0 ? "error" : "stale")
                 value: st.linkAlive ? st.mode : "Disconnected"
-                detail: st.heartbeatAge >= 0 ? "Heartbeat " + st.heartbeatAge + " s ago" : "No heartbeat yet"
+                detail: st.heartbeatAge >= 0 ? "Heartbeat " + st.heartbeatAge + " s ago · " + st.source : "No heartbeat yet"
             }
-            StatusCard {
+            Card {
                 title: "GPS"
                 status: !st.linkAlive ? "stale" : (gps.fixType >= 3 ? "ok"
                         : (flightEnv.state.effective === "indoor" ? "none" : (gps.fixType === 2 ? "warn" : "error")))
@@ -91,7 +97,7 @@ ScrollView {
                 value: notRequired ? "Not required" : gps.fix
                 detail: notRequired ? "Indoor mode · " + gps.fix : gps.satellites + " satellites"
             }
-            StatusCard {
+            Card {
                 title: "Battery"
                 status: !st.linkAlive ? "stale" : bat.percent < 0 ? "warn"
                         : (bat.percent > 30 ? "ok" : (bat.percent > 15 ? "warn" : "error"))
@@ -99,7 +105,7 @@ ScrollView {
                 detail: (bat.percent >= 0 && page.has(bat.voltage) ? bat.voltage.toFixed(2) + " V" : "PX4 gives no %")
                         + (page.has(bat.current) ? "  ·  " + bat.current.toFixed(1) + " A" : "")
             }
-            StatusCard {
+            Card {
                 title: "Telemetry 915"
                 status: !page.has(px4Link.rssiDbm) ? "stale" : page.bufLevel(px4Link.txbuf)
                 value: page.rssi(px4Link)
@@ -107,7 +113,7 @@ ScrollView {
             }
             Repeater {
                 model: vehicle.sensors.items.length
-                delegate: StatusCard {
+                delegate: Card {
                     required property int index
                     readonly property var s: vehicle.sensors.items[index] || ({})
                     title: s.name || ""
@@ -123,13 +129,13 @@ ScrollView {
             Layout.fillWidth: true
             spacing: Theme.gap
 
-            StatusCard {
+            Card {
                 title: "Jetson companion"
                 status: comp.linkAlive ? "ok" : (comp.heartbeatAge >= 0 ? "error" : "stale")
                 value: comp.linkAlive ? "Connected" : "Disconnected"
                 detail: comp.heartbeatAge >= 0 ? "Heartbeat " + comp.heartbeatAge + " s ago" : "No heartbeat yet"
             }
-            StatusCard {
+            Card {
                 title: "Telemetry 433"
                 status: !page.has(jetLink.rssiDbm) ? "stale" : page.bufLevel(jetLink.txbuf)
                 value: page.rssi(jetLink)
@@ -137,7 +143,7 @@ ScrollView {
             }
             Repeater {
                 model: vehicle.companion.items.length
-                delegate: StatusCard {
+                delegate: Card {
                     required property int index
                     readonly property var c: vehicle.companion.items[index] || ({})
                     title: c.name || ""

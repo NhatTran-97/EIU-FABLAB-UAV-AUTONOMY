@@ -1,4 +1,4 @@
-# Lệnh bay từ Ground Station → Jetson → PX4
+# Lệnh bay từ Ground Station → PX4 (trực tiếp hoặc qua Jetson)
 
 Tài liệu mô tả cách các nút **Take-off / Land / Hold / RTL / Send WP** trên app EIU Drone GCS
 đi tới PX4, các luật an toàn, giao thức xác nhận và cách kiểm tra.
@@ -23,10 +23,34 @@ Tài liệu mô tả cách các nút **Take-off / Land / Hold / RTL / Send WP** 
 |---|---|---|
 | App ↔ Jetson | Radio SiK 433 MHz (`/dev/telem_radio` trên Jetson) | MAVLink v2, dialect `drone_dialect` |
 | Jetson ↔ PX4 | uXRCE‑DDS qua `/dev/ttyTHS0` (MicroXRCEAgent) | ROS 2 topic `/fmu/in/*`, `/fmu/out/*` (`px4_msgs`) |
-| App ↔ PX4 (song song) | Radio SiK 915 MHz | MAVLink chuẩn — chỉ đọc trạng thái, **không** gửi lệnh bay |
+| App ↔ PX4 (trực tiếp) | Radio SiK 915 MHz | MAVLink chuẩn — trạng thái + lệnh bay (đường **px4**) |
 
-Lệnh bay **chỉ** đi qua Jetson. Jetson là nơi áp luật an toàn và sau này là nơi chạy logic tự hành
-(Offboard, tránh vật cản, bay theo waypoint).
+**Hai đường gửi lệnh bay, mỗi đường một chỗ bấm** — `core/commands/flight.py`:
+
+| Chỗ bấm | Đường | Lệnh | Ai xác nhận |
+|---|---|---|---|
+| **Ô PX4** trên thanh trên cùng (bấm → popup) | App → radio 915 → PX4 (MAVLink trực tiếp) | Take-off = `COMPONENT_ARM_DISARM` (nếu chưa arm) → `NAV_TAKEOFF`; Land = `NAV_LAND` | PX4 |
+| **3 nút dưới Map** | App → radio 433 → Jetson → DDS → PX4 (các mục dưới) | Take-off / Land / Hold / RTL / Send WP | Jetson |
+
+**Khóa chéo.** Đường nào gửi lệnh bay trước thì **giữ quyền** đến khi drone **về đất + disarm**;
+đường còn lại bị khóa (*"flight controlled from …"*). Nhả quyền sớm nếu lệnh bị từ chối / hết hạn,
+hoặc được chấp nhận nhưng drone không arm trong 3 s. Ngoại lệ: đường giữ quyền **mất kết nối** → đường
+kia mở (không để drone không ai điều khiển). Tay RC luôn ưu tiên hơn cả hai.
+
+**Điều kiện từng nút** (`FlightCommander.blocker`, lý do hiện trên nút / dòng trạng thái):
+
+| Điều kiện | Ô PX4 (915) | 3 nút dưới (Jetson) |
+|---|---|---|
+| Link của đường đó mất | khóa | khóa |
+| Jetson không có dữ liệu PX4 qua DDS (ô *PX4 (DDS)* ≠ ok) | — | khóa Take-off / Land / Hold / RTL |
+| Không GPS 3D fix | — | khóa Take-off, Send WP khi môi trường **Outdoor**; RTL luôn cần GPS. Land / Hold không bao giờ bị khóa vì GPS |
+| Khóa chéo | khóa khi Jetson giữ quyền | khóa khi PX4 (915) giữ quyền (Send WP không bị) |
+
+Đường trực tiếp: độ cao cất cánh đổi sang AMSL ở app (`GLOBAL_POSITION_INT.alt` + độ cao nhập, cần GPS 3D
+fix); không có → `NaN` → PX4 dùng `MIS_TAKEOFF_ALT`.
+
+Jetson vẫn là nơi chạy logic tự hành (Offboard, tránh vật cản, bay theo waypoint). Lệnh Land / Hold
+từ app sẽ đưa PX4 ra khỏi Offboard — node Offboard trên Jetson phải tự nhận ra và không giành lại.
 
 **Mã nguồn**
 
@@ -80,7 +104,12 @@ Lệnh bay **chỉ** đi qua Jetson. Jetson là nơi áp luật an toàn và sau
 * Take‑off có **Pre‑flight check** (`core/alerts/health.py`): có lỗi nghiêm trọng (mất PX4, cảm biến
   lỗi, pin ≤ 15 %, ngoài trời chưa có GPS fix) → khóa nút. Land không bao giờ bị khóa.
 * RTL bị khóa khi môi trường bay là **Trong nhà** (RTL cần GPS).
-* Mất kết nối Jetson (radio 433) → khóa toàn bộ nút.
+* Luật trạng thái (`check_state`, áp cho **cả hai đường** khi PX4 đã báo `EXTENDED_SYS_STATE`):
+  Take-off khi đang bay → chặn *"already flying"*; Land / Hold / RTL khi ở mặt đất → chặn
+  *"vehicle is on the ground"*. Chưa biết trạng thái → để PX4 / Jetson quyết.
+* Khóa chéo + điều kiện từng nút: xem bảng ở mục 1.
+* Đường trực tiếp không có luật riêng của Jetson — PX4 tự từ chối khi không đủ điều kiện
+  (pre-arm check, không có vị trí...), lý do hiện ở *Diagnostics → PX4 messages*.
 
 Tay điều khiển RC **luôn ưu tiên**: gạt công tắc chế độ (Stabilized / Position) hoặc Kill vẫn có
 hiệu lực bất kể lệnh từ app.
@@ -101,11 +130,16 @@ App                         Jetson                                PX4
 
 | Bên | Thời gian chờ | Khi hết giờ |
 |---|---|---|
-| App chờ ACK từ Jetson | 1.5 s (`commands.ack_timeout_s` trong `gcs.yaml`) | Gửi lại, tối đa 3 lần (`retries`), rồi báo *"Jetson not responding"* |
+| App chờ ACK (Jetson hoặc PX4, từng bước) | 1.5 s im lặng (`commands.ack_timeout_s` trong `gcs.yaml`) | Gửi lại (`confirmation` +1) — **cả khi đang IN_PROGRESS** (hỏi trạng thái). Chỉ báo *"Jetson not responding"* khi **3 lần liên tiếp** (`retries`) không nghe gì; có ACK bất kỳ là đếm lại |
 | Jetson giữ chỗ cho app | Gửi lại `IN_PROGRESS` mỗi 0.5 s khi đang chờ PX4 | — |
 | Jetson chờ ACK từ PX4 cho mỗi bước | 3 s | Gửi lại 1 lần, rồi trả `FAILED` *"no ACK from PX4"* |
 
-* App gửi lại cùng lệnh (vì chưa thấy ACK) → Jetson **không chạy lại**, chỉ trả `IN_PROGRESS`.
+* App gửi lại cùng lệnh (vì chưa thấy ACK, `confirmation > 0`) → Jetson **không chạy lại**:
+  lệnh đang chạy → trả `IN_PROGRESS`; lệnh **vừa xong** (≤ 10 s, `RESULT_HOLD_S`) → **trả lại kết quả cũ**.
+  Trước đây ACK kết quả rớt trên radio → bản gửi lại bị coi là lệnh mới (Take-off đã cất cánh bị báo
+  *"already flying"*, hoặc ARM + cất cánh lần 2 nếu land detector chưa kịp đổi).
+* Send WP: `MISSION_ACK` cuối rớt → app gửi lại item cuối → Jetson **gửi lại ACK** (≤ 10 s), không nhận lại.
+* Dòng trạng thái ghi thời gian từ lúc bấm đến khi có kết quả, vd *"✓ Take-off 5 m: accepted by Jetson (0.8 s)"*.
 * Lý do từ chối / kết quả gửi kèm bằng `STATUSTEXT` (component 191) → hiện ở tab
   **Diagnostics → PX4 messages**; trạng thái lệnh hiện ngay dưới thanh nút trên Map.
 
@@ -139,6 +173,25 @@ App ── MISSION_COUNT(n) ─────────────► Jetson
 ---
 
 ## 6. Thử nghiệm
+
+### Nút 🧪 Test (phòng thí nghiệm — kiểm tra lệnh có lên tới Jetson không)
+
+Nút **🧪 Test** cạnh *Land* luôn bấm được = **công tắc chế độ test** (bấm lại để tắt; không lưu — mở lại app là tắt).
+Khi bật (*🧪 Test ON*):
+
+* **Take-off / Land / Send WP** (chính 3 nút thường) **mở khóa**, gửi thẳng tới Jetson, **bỏ qua điều kiện phía
+  GCS** (DDS, GPS, khóa chéo, trạng thái bay). Vẫn phải giữ 1 s để xác nhận; hộp xác nhận ghi *🧪 TEST*.
+* Bảng phía trên: **📡 Ping Jetson** (`MAV_CMD_USER_1` = 31010 → Jetson trả `ACCEPTED` + STATUSTEXT
+  *"Link test OK: Jetson got ping #n"*, **không đụng PX4**) + 3 tin nhắn mới nhất từ Jetson / PX4.
+* Jetson **vẫn áp luật an toàn của nó**: không có PX4 → trả *"no PX4 data (DDS agent?)"* (vẫn chứng minh lệnh đã
+  tới và phản hồi đã về). **Có PX4 qua DDS + ở mặt đất → Take-off SẼ ARM — tháo cánh quạt.**
+
+Kết quả: dòng trạng thái dưới nút (*"✓ Link test: accepted by Jetson (0.4 s)"*, hoặc *"Jetson not responding"*
+= lệnh không tới / ACK không về) + 3 tin nhắn mới nhất ngay trong bảng. Phía Jetson: log
+`commands: Link test OK…` / `commands: -> PX4 cmd …`. Jetson chạy bản cũ (chưa build lại) trả
+*UNSUPPORTED* cho ping → app vẫn báo *"reached Jetson"*. Ra ngoài bay: các nút thường giữ nguyên mọi điều kiện.
+
+### Bay thử
 
 **Lần đầu — THÁO CÁNH QUẠT**, drone trên sàn, một người cầm RC, tay sẵn trên công tắc **Kill**.
 

@@ -76,3 +76,38 @@ def test_no_link():
     s2 = CommandSender(FakeLinks(jetson=FakeLink(ok=False)))   # link chua mo cong
     s2.send(TARGET, mavlink.MAV_CMD_NAV_LAND)
     assert s2.values['state'] == 'no_link'
+
+
+def test_in_progress_silence_polls_instead_of_timing_out(monkeypatch):
+    """Dang IN_PROGRESS ma rot vai keepalive -> gui lai de hoi (khong bao 'not responding' ngay)."""
+    now = [100.0]
+    monkeypatch.setattr('ground_station_ui.core.commands.sender.time.monotonic', lambda: now[0])
+    link = FakeLink()
+    s = CommandSender(FakeLinks(jetson=link))
+    s.send(TARGET, mavlink.MAV_CMD_NAV_TAKEOFF)
+    s.on_ack(ack(22, mavlink.MAV_RESULT_IN_PROGRESS), 'jetson')
+    assert s.values['state'] == 'in_progress'
+    for t in (101.1, 102.2):                         # im lang -> hoi lai, tang confirmation
+        now[0] = t
+        s.tick(t)
+    assert [m.confirmation for m in link.sent] == [0, 1, 2] and s.values['busy']
+    s.on_ack(ack(22, mavlink.MAV_RESULT_IN_PROGRESS), 'jetson')   # Jetson tra loi -> dem lai
+    assert s.values['attempt'] == 0
+    for t in (103.3, 104.4):
+        now[0] = t
+        s.tick(t)
+    assert s.values['busy']                           # moi 2 lan im lang lien tiep
+    now[0] = 104.9
+    s.on_ack(ack(22, mavlink.MAV_RESULT_ACCEPTED), 'jetson')     # ket qua (co the la ban tra lai)
+    assert s.values['state'] == 'accepted' and s.values['elapsed'] == 4.9
+
+
+def test_timeout_only_after_consecutive_silence(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr('ground_station_ui.core.commands.sender.time.monotonic', lambda: now[0])
+    s = CommandSender(FakeLinks(jetson=FakeLink()))
+    s.send(TARGET, mavlink.MAV_CMD_NAV_LAND)
+    for t in (1.1, 2.2, 3.3):
+        now[0] = t
+        s.tick(t)
+    assert s.values['state'] == 'timeout' and s.values['elapsed'] == 3.3

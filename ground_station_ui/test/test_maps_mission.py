@@ -246,3 +246,22 @@ def test_layer_without_key_is_dropped_unless_cached(tmp_path, upstream, monkeypa
     assert hits == []
     ts.stop()
 
+
+
+def test_single_tile_timeout_does_not_take_server_offline(tmp_path, monkeypatch):
+    """O zoom sau: 1 o tai cham (timeout) KHONG duoc lam ca server ngung tai 30 s (moi o khac 404)."""
+    import socket
+
+    from ground_station_ui.core.maps import tile_server
+    server = TileServer([{'id': 'sat', 'url': 'http://example.invalid/{z}/{x}/{y}'}], tmp_path)
+    errors = iter([urllib.error.URLError(socket.timeout('timed out')), TimeoutError('read timed out'),
+                   ConnectionResetError(), urllib.error.URLError(socket.gaierror(-3, 'no DNS'))])
+
+    def fake_urlopen(*a, **kw):
+        raise next(errors)
+    monkeypatch.setattr(tile_server.urllib.request, 'urlopen', fake_urlopen)
+    for i in range(3):                               # timeout ket noi / doc, reset: loi rieng 1 o
+        assert server.fetch_upstream(server.layers['sat'], 19, i, 0) is None
+        assert server.online
+    assert server.fetch_upstream(server.layers['sat'], 19, 9, 0) is None
+    assert not server.online                         # khong phan giai DNS = mat mang that

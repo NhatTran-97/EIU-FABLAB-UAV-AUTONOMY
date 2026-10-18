@@ -2,11 +2,19 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 
-// Nut Take-off / Land (giua duoi ban do). Lenh gui toi Jetson qua radio 433 (commands.*),
-// phai GIU nut xac nhan 1 giay de tranh bam nham.
+// Nut Take-off / Land / Hold / RTL / Send WP (giua duoi ban do) -> JETSON (radio 433 -> DDS -> PX4).
+// Lenh thang PX4 (915) nam o o PX4 tren thanh tren cung (TopBar). Moi nut khoa theo commands.gates.jetson
+// (mat Jetson, Jetson khong co du lieu PX4, khong GPS, khoa cheo khi duong PX4 dang giu quyen --
+// core/commands/flight.py). Phai GIU nut xac nhan 1 giay de tranh bam nham.
 Item {
     id: root
-    readonly property bool linkOk: vehicle.companion.values.linkAlive === true
+    readonly property var g: commands.gates.jetson || ({})      // action -> ly do khoa ('' = mo)
+    // 🧪 che do TEST (phong thi nghiem): Take-off / Land / Send WP mo khoa, gui thang Jetson bo qua
+    // dieu kien phia GCS (DDS, GPS, khoa cheo) -- de xem lenh co len Jetson + phan hoi ve khong.
+    // Khong luu: tat app / bam Test lan nua -> ve binh thuong (ra ngoai bay van du dieu kien).
+    property bool testMode: false
+    readonly property var testable: ["takeoff", "land", "upload"]
+    function open(a) { return (testMode && testable.indexOf(a) >= 0) || g[a] === "" }
     readonly property var st: commands.values
     property string confirming: ""          // "" | "takeoff" | "land" | "rtl" | "upload"
     // dang bay (PX4 EXTENDED_SYS_STATE): IN AIR / TAKING OFF / LANDING
@@ -37,21 +45,38 @@ Item {
     implicitHeight: col.implicitHeight
 
     function stateText() {
+        var step = st.steps > 1 ? " step " + st.step + "/" + st.steps : ""
+        var took = st.elapsed >= 0 ? " (" + st.elapsed.toFixed(1) + " s)" : ""
         switch (st.state) {
-        case "sending":     return "Sending " + st.label + "… (try " + st.attempt + "/" + st.retries + ")"
+        case "sending":     return "Sending " + st.label + step + "… (try " + st.attempt + "/" + st.retries + ")"
         case "in_progress": return st.label + ": Jetson in progress…"
-        case "accepted":    return "✓ " + st.label + ": accepted by Jetson"
-        case "rejected":    return "✕ " + st.label + ": temporarily rejected"
-        case "denied":      return "✕ " + st.label + ": denied by Jetson"
-        case "unsupported": return "✕ " + st.label + ": not supported by Jetson"
-        case "failed":      return "✕ " + st.label + ": failed"
-        case "timeout":     return "⚠ " + st.label + ": Jetson not responding"
-        case "no_link":     return "⚠ Link not open: " + commands.targetLink + " (tab Links)"
+                                   + (st.attempt > 0 ? " (no reply, asking " + st.attempt + "/" + st.retries + ")" : "")
+        case "accepted":    return "✓ " + st.label + ": accepted by Jetson" + took
+        case "rejected":    return "✕ " + st.label + ": temporarily rejected" + step
+        case "denied":      return "✕ " + st.label + ": denied by Jetson — see PX4 messages"
+        // Jetson ban cu chua biet ping -> van tra ACK: lenh DA len toi Jetson
+        case "unsupported": return st.label === "Link test" ? "✓ Link test: reached Jetson" + took
+                                                              + " (old drone_telemetry — rebuild for ping)"
+                                                            : "✕ " + st.label + ": not supported"
+        case "failed":      return "✕ " + st.label + ": failed" + step
+        case "timeout":     return "⚠ " + st.label + ": Jetson not responding" + took + " — check radio 433"
+        case "no_link":     return "⚠ Link not open: " + commands.targetLink + " (tab Connections)"
+        case "blocked":     return "✕ " + st.label + ": " + st.message
         default:            return ""
         }
     }
+    // ly do khoa cua cac nut dang hien (gop trung) -> dong trang thai khi ranh
+    function lockText() {
+        var acts = inAir ? ["upload", "hold", "rtl", "land"] : ["takeoff", "upload", "land"]
+        var seen = []
+        for (var i = 0; i < acts.length; i++) {
+            var why = g[acts[i]]
+            if (why && seen.indexOf(why) < 0) seen.push(why)
+        }
+        return seen.length ? "🔒 " + seen.join("  ·  ") : ""
+    }
     function stateColor() {
-        if (st.state === "accepted") return Theme.ok
+        if (st.state === "accepted" || (st.state === "unsupported" && st.label === "Link test")) return Theme.ok
         if (st.state === "sending" || st.state === "in_progress") return Theme.text
         return Theme.error
     }
@@ -78,11 +103,18 @@ Item {
                 spacing: 10
                 Text {
                     Layout.alignment: Qt.AlignHCenter
-                    text: root.confirming === "takeoff" ? "Take off? (" + flightEnv.state.effectiveLabel + ")"
+                    text: (root.testMode && root.confirming !== "rtl" ? "🧪 TEST — " : "")
+                        + (root.confirming === "takeoff" ? "Take off? (" + flightEnv.state.effectiveLabel + ")"
                         : root.confirming === "land" ? "Land at current position?"
                         : root.confirming === "rtl" ? "Return to launch and land?"
-                        : "Send " + root.wpCount + " waypoints to Jetson?"
+                        : "Send " + root.wpCount + " waypoints to Jetson?")
                     color: Theme.text; font.pixelSize: 15; font.bold: true
+                }
+                Text {
+                    visible: root.confirming === "takeoff" || root.confirming === "land" || root.confirming === "rtl"
+                    Layout.alignment: Qt.AlignHCenter
+                    text: "via Jetson · 433  (Jetson → DDS → PX4)"
+                    color: Theme.textDim; font.pixelSize: 12
                 }
                 RowLayout {
                     visible: root.confirming === "takeoff"
@@ -139,7 +171,10 @@ Item {
                         objectName: "uploadConfirm"
                         text: conflictText.visible ? "Send anyway" : "Send"
                         highlighted: true
-                        onClicked: { commands.uploadMission(); root.confirming = "" }
+                        onClicked: {
+                            if (root.testMode) commands.testUploadMission(); else commands.uploadMission()
+                            root.confirming = ""
+                        }
                     }
                 }
                 RowLayout {
@@ -150,11 +185,15 @@ Item {
                     Rectangle {
                         id: holdBtn
                         objectName: "holdConfirm"
-                        // Take-off bi khoa khi pre-flight co van de nghiem trong; Land luon cho phep
-                        readonly property bool blocked: root.confirming === "takeoff" && alerts.critical > 0
+                        // khoa: dieu kien cua lenh mat trong luc mo hop (gates), hoac Take-off co van de
+                        // nghiem trong o pre-flight
+                        readonly property bool testing: root.testMode && root.testable.indexOf(root.confirming) >= 0
+                        readonly property string gateWhy: testing ? "" : (root.g[root.confirming] || "")
+                        readonly property bool blocked: gateWhy !== ""
+                                                        || (!testing && root.confirming === "takeoff" && alerts.critical > 0)
                         enabled: !blocked
                         opacity: blocked ? 0.4 : 1
-                        implicitWidth: 200; implicitHeight: 40; radius: 6
+                        implicitWidth: Math.max(200, holdLabel.implicitWidth + 24); implicitHeight: 40; radius: 6
                         color: Theme.panelAlt; border.color: Theme.border; clip: true
                         property real progress: 0
                         Rectangle {
@@ -162,8 +201,10 @@ Item {
                             color: root.confirming === "takeoff" ? Theme.ok : Theme.warn
                         }
                         Text {
+                            id: holdLabel
                             anchors.centerIn: parent
-                            text: holdBtn.blocked ? "Locked — fix critical issues" : "Hold to confirm"
+                            text: holdBtn.gateWhy !== "" ? "Locked — " + holdBtn.gateWhy
+                                : holdBtn.blocked ? "Locked — fix critical issues" : "Hold to confirm"
                             color: Theme.text; font.pixelSize: 13; font.bold: true
                         }
                         NumberAnimation on progress {
@@ -171,7 +212,9 @@ Item {
                             running: false; from: 0; to: 1; duration: 1000
                             onFinished: {
                                 if (holdBtn.progress < 1) return
-                                if (root.confirming === "takeoff") commands.takeoff(altBox.meters)
+                                if (holdBtn.testing && root.confirming === "takeoff") commands.testTakeoff(altBox.meters)
+                                else if (holdBtn.testing) commands.testLand()
+                                else if (root.confirming === "takeoff") commands.takeoff(altBox.meters)
                                 else if (root.confirming === "rtl") commands.rtl()
                                 else commands.land()
                                 root.confirming = ""
@@ -184,6 +227,52 @@ Item {
                             onReleased: { holdAnim.stop(); holdBtn.progress = 0 }
                             onCanceled: { holdAnim.stop(); holdBtn.progress = 0 }
                         }
+                    }
+                }
+            }
+        }
+
+        // ---- bang TEST (phong thi nghiem): gui toi Jetson bo qua dieu kien phia GCS ----
+        Rectangle {
+            objectName: "testPanel"
+            visible: root.testMode && root.confirming === ""
+            Layout.alignment: Qt.AlignHCenter
+            implicitWidth: Math.max(420, testCol.implicitWidth + 28)
+            implicitHeight: testCol.implicitHeight + 24
+            radius: Theme.radius
+            color: "#f2161b22"; border.color: Theme.warn; border.width: 2
+
+            ColumnLayout {
+                id: testCol
+                anchors.fill: parent; anchors.margins: 14
+                spacing: 8
+                Text { text: "🧪 TEST MODE — Jetson link (radio 433)"; color: Theme.warn; font.pixelSize: 15; font.bold: true }
+                Text {
+                    Layout.fillWidth: true; Layout.maximumWidth: 460; wrapMode: Text.WordWrap
+                    text: "Take-off / Land / Send WP below are UNLOCKED and go straight to Jetson (GCS checks skipped: "
+                        + "PX4 DDS, GPS, cross-lock) — to see whether commands reach Jetson and replies come back. "
+                        + "Jetson still applies its own rules: no PX4 → replies \"no PX4 data\". "
+                        + "If PX4 IS connected via DDS and on the ground, Take-off WILL ARM — remove propellers. "
+                        + "Press 🧪 Test again to leave test mode."
+                    color: Theme.warn; font.pixelSize: 12
+                }
+                Button {
+                    objectName: "pingBtn"
+                    text: "📡 Ping Jetson"
+                    ToolTip.visible: hovered; ToolTip.text: "Jetson replies ACK + message, does nothing with PX4"
+                    onClicked: commands.ping()
+                }
+                // tra loi cua Jetson / PX4 (STATUSTEXT) moi nhat -- thay ngay lenh co len toi Jetson khong
+                Text { text: "Latest messages"; color: Theme.textDim; font.pixelSize: 11 }
+                Repeater {
+                    model: Math.min(3, vehicle.messages.items.length)
+                    delegate: Text {
+                        required property int index
+                        readonly property var msg: vehicle.messages.items[index] || ({})
+                        Layout.fillWidth: true; Layout.maximumWidth: 460; elide: Text.ElideRight
+                        text: msg.time + "  " + msg.text
+                        color: index === 0 ? Theme.text : Theme.textDim
+                        font.pixelSize: 12; font.family: "monospace"
                     }
                 }
             }
@@ -210,7 +299,7 @@ Item {
                 label: "⬆  Take-off"; tint: Theme.ok
                 // dang bay: an Take-off (tranh bam nham), chi con Send WP / Land
                 visible: !root.inAir
-                enabled: root.linkOk
+                enabled: root.open("takeoff")
                 active: root.confirming === "takeoff"
                 onClicked: root.confirming = root.confirming === "takeoff" ? "" : "takeoff"
             }
@@ -218,7 +307,7 @@ Item {
                 objectName: "uploadBtn"
                 label: root.up.busy ? "■  Cancel upload" : "⇪  Send WP (" + root.wpCount + ")"
                 tint: Theme.accent
-                enabled: root.linkOk && (root.wpCount > 0 || root.up.busy)
+                enabled: root.up.busy || (root.open("upload") && root.wpCount > 0)
                 active: root.confirming === "upload" || root.up.busy
                 onClicked: {
                     if (root.up.busy) { commands.cancelUpload(); return }
@@ -230,31 +319,41 @@ Item {
                 objectName: "holdModeBtn"
                 visible: root.inAir
                 label: "⏸  Hold"; tint: Theme.accent
-                enabled: root.linkOk
+                enabled: root.open("hold")
                 onClicked: { root.confirming = ""; commands.hold() }
             }
             CmdBtn {
                 objectName: "rtlBtn"
                 visible: root.inAir
-                readonly property bool needsGps: flightEnv.state.effective !== "outdoor"
-                label: needsGps ? "⌂  RTL (GPS)" : "⌂  RTL"; tint: Theme.warn
-                enabled: root.linkOk && !needsGps
+                label: "⌂  RTL"; tint: Theme.warn
+                enabled: root.open("rtl")
                 active: root.confirming === "rtl"
                 onClicked: root.confirming = root.confirming === "rtl" ? "" : "rtl"
             }
             CmdBtn {
                 objectName: "landBtn"
                 label: "⬇  Land"; tint: Theme.warn
-                enabled: root.linkOk
+                enabled: root.open("land")
                 active: root.confirming === "land"
                 onClicked: root.confirming = root.confirming === "land" ? "" : "land"
+            }
+            CmdBtn {
+                objectName: "testBtn"
+                // luon bam duoc: kiem tra duong Jetson khi cac nut khac dang khoa (phong thi nghiem)
+                label: root.testMode ? "🧪  Test ON" : "🧪  Test"; tint: root.testMode ? Theme.warn : Theme.textDim
+                implicitWidth: root.testMode ? 120 : 96
+                active: root.testMode
+                onClicked: { root.testMode = !root.testMode; root.confirming = "" }
             }
         }
 
         // ---- trang thai lenh ----
         Rectangle {
-            readonly property string msg: !root.linkOk ? "Jetson not connected (radio 433) — buttons locked"
-                                                       : [root.stateText(), root.uploadText()].filter(t => t !== "").join("   ·   ")
+            readonly property string busyMsg: [root.stateText(), root.uploadText()].filter(t => t !== "").join("   ·   ")
+            // ranh: ly do khoa (che do test: nhac dang bo qua dieu kien)
+            readonly property string msg: busyMsg !== "" ? busyMsg
+                                        : root.testMode ? "🧪 TEST MODE — GCS checks off, buttons send straight to Jetson"
+                                        : root.lockText()
             visible: msg !== ""
             Layout.alignment: Qt.AlignHCenter
             implicitWidth: stText.implicitWidth + 20; implicitHeight: 26; radius: 6
@@ -263,7 +362,7 @@ Item {
                 id: stText
                 anchors.centerIn: parent
                 text: parent.msg
-                color: !root.linkOk ? Theme.textDim
+                color: parent.busyMsg === "" ? Theme.textDim
                      : (root.st.state === "idle" && (root.up.state === "done" || root.up.state === "sending")) ? Theme.ok
                      : root.stateColor()
                 font.pixelSize: 12

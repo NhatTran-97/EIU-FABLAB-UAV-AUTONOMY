@@ -25,6 +25,9 @@ class MapAdapter(QObject):
         self._center = [self._settings.value('map/lat', float(center[0]), type=float),
                         self._settings.value('map/lon', float(center[1]), type=float)]
         self._zoom = self._settings.value('map/zoom', float(map_cfg.get('default_zoom', 16)), type=float)
+        # toa do dien san o o nhap (tab Map); khong cau hinh -> de trong
+        sd = map_cfg.get('search_default')
+        self._search_default = f'{float(sd[0]):.6f}, {float(sd[1]):.6f}' if sd else ''
         self._layers = []
         for l in server.layers.values():
             if l.hidden:
@@ -58,6 +61,9 @@ class MapAdapter(QObject):
     def _get_zoom(self):
         return self._zoom
 
+    def _get_search_default(self):
+        return self._search_default
+
     def _get_max_tiles(self):
         return self._max_tiles
 
@@ -87,6 +93,7 @@ class MapAdapter(QObject):
     defaultCenter = Property('QVariantList', _get_center, constant=True)
     defaultZoom = Property(float, _get_zoom, constant=True)
     maxPrefetchTiles = Property(int, _get_max_tiles, constant=True)
+    searchDefault = Property(str, _get_search_default, constant=True)   # "lat, lon" dien san o tim
     online = Property(bool, _get_online, notify=changed)
     cache = Property('QVariantMap', _get_cache, notify=changed)        # layer id -> {tiles, sizeMb}
     prefetch = Property('QVariantMap', _get_progress, notify=changed)

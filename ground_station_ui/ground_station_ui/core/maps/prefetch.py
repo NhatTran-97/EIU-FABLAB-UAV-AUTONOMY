@@ -1,7 +1,8 @@
 """Tai truoc 1 vung ban do vao cache (giong 'Offline Maps' cua QGC).
 
 Chay tren thread rieng, vai worker song song; o da co trong cache thi bo qua. Tien do doc qua
-`progress()`; huy bang cancel().
+`progress()`; huy bang cancel(). Vong doi: idle -> running -> cancelling -> idle (phase).
+Tat app: cancel_and_wait() TRUOC khi dong SQLite (worker khong con cham vao cache da dong).
 """
 
 import threading
@@ -17,8 +18,9 @@ class Prefetcher:
         self.server = server
         self._cancel = threading.Event()
         self._lock = threading.Lock()
-        self._state = {'running': False, 'total': 0, 'done': 0, 'downloaded': 0, 'failed': 0,
-                       'message': ''}
+        self._state = {'running': False, 'phase': 'idle', 'total': 0, 'done': 0, 'downloaded': 0,
+                       'failed': 0, 'message': ''}
+        self._thread = None
 
     def progress(self):
         with self._lock:
@@ -26,6 +28,19 @@ class Prefetcher:
 
     def cancel(self):
         self._cancel.set()
+        with self._lock:
+            if self._state['running']:
+                self._state['phase'] = 'cancelling'
+
+    def cancel_and_wait(self, timeout=6.0):
+        """Huy va cho thread tai dung (moi worker xong o dang tai, toi da ~FETCH_TIMEOUT).
+        True neu da dung han."""
+        self.cancel()
+        t = self._thread
+        if t is not None:
+            t.join(timeout)
+            return not t.is_alive()
+        return True
 
     def start(self, layer_id, bbox, zmin, zmax, max_tiles):
         """bbox = (west, south, east, north). Tra ve thong bao loi (str) hoac '' neu bat dau."""
@@ -43,11 +58,13 @@ class Prefetcher:
             return f'Area too large: {total} tiles (max {max_tiles}). Zoom in or lower max zoom.'
         self._cancel.clear()
         with self._lock:
-            self._state = {'running': True, 'total': total, 'done': 0, 'downloaded': 0, 'failed': 0,
+            self._state = {'running': True, 'phase': 'running', 'total': total, 'done': 0,
+                           'downloaded': 0, 'failed': 0,
                            'message': f'Downloading {total} tiles ({", ".join(s.title for s in sources)}, '
                                       f'zoom {zmin}-{zmax})'}
-        threading.Thread(target=self._run, args=(sources, bbox, zmin, zmax),
-                         name='map-prefetch', daemon=True).start()
+        self._thread = threading.Thread(target=self._run, args=(sources, bbox, zmin, zmax),
+                                        name='map-prefetch', daemon=True)
+        self._thread.start()
         return ''
 
     def _one(self, layer, z, x, y):
@@ -75,6 +92,7 @@ class Prefetcher:
         with self._lock:
             s = self._state
             s['running'] = False
+            s['phase'] = 'idle'
             if self._cancel.is_set():
                 s['message'] = f'Cancelled ({s["done"]}/{s["total"]})'
             elif not self.server.online and s['failed']:

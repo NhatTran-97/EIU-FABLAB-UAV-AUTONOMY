@@ -1,0 +1,20 @@
+# Onboard parameters for Vehicle 1 -- KHONG DUNG MTF-02 (optical flow + range tren TELEM3)
+#
+# QGC: Vehicle Setup -> Parameters -> Tools -> Load from file -> chon file nay -> Reboot.
+# Chi doi phan lien quan MTF-02 + nguon do cao; pin, failsafe, flight modes giu nguyen.
+#
+# Sau khi nap:
+#   - TELEM3 tat (cam bien co the de nguyen hoac thao ra)
+#   - EKF2 khong dung optical flow / range: do cao tu BARO (EKF2_HGT_REF 0), vi tri ngang chi tu GPS
+#   - MAV_PROTO_VER ve 0 (mac dinh PX4) -- =1 chi can cho MTF-02
+#   => Trong nha (khong GPS): KHONG co vi tri -> chi bay Stabilized / Altitude;
+#      Position, Hold, Take-off tu dong, RTL KHONG dung duoc.
+#
+# Vehicle-Id	Component-Id	Name	Value	Type
+1	1	MAV_1_CONFIG	0	6
+1	1	MAV_PROTO_VER	0	6
+1	1	EKF2_OF_CTRL	0	6
+1	1	EKF2_RNG_CTRL	0	6
+1	1	EKF2_HGT_REF	0	6
+1	1	EKF2_BARO_CTRL	1	6
+1	1	EKF2_GPS_CTRL	7	6

@@ -30,7 +30,9 @@ trong app; tile server trả ô từ file `.mbtiles` (SQLite) trong `data/maps/`
   / `rio mbtiles` → thêm lớp `file: ortho.mbtiles` (không có `url`) trong `gcs.yaml`.
 - **Tìm vị trí**: ô góc trên trái, nhập `11.052919, 106.666057` (copy từ Google Maps được) → Enter:
   bản đồ bay tới + ghim đỏ; *＋ Waypoint* để thêm luôn điểm đó. App nhớ vùng xem cuối cùng.
-- **Môi trường bay** (tab Cài đặt: Tự động / Trong nhà / Ngoài trời): chọn nguồn độ cao
+- **Môi trường bay** (tab Cài đặt: Tự động / Trong nhà / Ngoài trời). *Tự động* = theo bộ tham số PX4
+  đang nạp (`EKF2_GPS_CTRL = 0` hoặc `EKF2_HGT_REF = 2` → trong nhà; GPS bật + độ cao baro/GPS → ngoài trời);
+  chưa đọc được tham số thì tạm theo GPS fix. Quyết định nguồn độ cao
   (trong nhà = cảm biến khoảng cách qua EKF, ngoài trời = so với Home), độ cao cất cánh mặc định,
   màu cảnh báo GPS; app đọc `EKF2_GPS_CTRL` / `EKF2_HGT_REF` từ PX4 và **cảnh báo nếu PX4 đang nạp
   bộ tham số không khớp** (vd ra ngoài trời mà quên nạp `outdoor.params`).
@@ -78,14 +80,20 @@ Không đặt ảnh / logo lớn trong các trang vận hành (Map, 3D, Telemetr
   khóa nút cất cánh). Quy tắc: `core/alerts/health.py`.
 - **Giọng nói** (tiếng Anh, tắt / bật ở Settings): đổi chế độ, arm / disarm, mất kết nối, pin 30/20/15/10 %.
 
-## Take-off / Land / Gửi waypoint (→ Jetson)
+## Take-off / Land / Gửi waypoint
+
+**Lệnh bay có 2 đường:** bấm **ô PX4** trên thanh trên cùng → Take-off / Land **thẳng PX4 qua radio 915**
+(ARM → `NAV_TAKEOFF`, `NAV_LAND` — ACK từ PX4); **3 nút dưới Map** → **qua Jetson (433)** như bảng dưới.
+**Khóa chéo:** đường nào đã cất cánh / hạ cánh thì giữ quyền đến khi về đất + disarm, đường kia bị khóa.
+Nút Jetson còn khóa khi mất Jetson, Jetson không có dữ liệu PX4 (DDS), hoặc ngoài trời chưa có GPS fix.
+Chi tiết: [docs/flight_commands.md](docs/flight_commands.md).
 
 Chi tiết cách hoạt động, luật an toàn, giao thức ACK, cách thử: [docs/flight_commands.md](docs/flight_commands.md).
 
-Thanh nút giữa dưới tab Map, chỉ bật khi có heartbeat Jetson (radio 433). Take-off / Land phải
+Thanh nút giữa dưới tab Map (đường Jetson), khóa theo điều kiện trên — lý do hiện ngay dưới nút. Take-off / Land phải
 **giữ 1 giây** để xác nhận; gửi waypoint cảnh báo nếu có điểm nằm trong vùng cấm / hạn chế.
 
-| Nút | MAVLink gửi tới sysid 1 / compid 191 (link `jetson`) | Jetson trả về |
+| Nút | Đường Jetson: MAVLink gửi tới sysid 1 / compid 191 (link `jetson`) | Jetson trả về |
 |---|---|---|
 | Take-off | `COMMAND_LONG` `MAV_CMD_NAV_TAKEOFF` (22), `param7` = độ cao m | `COMMAND_ACK` |
 | Land | `COMMAND_LONG` `MAV_CMD_NAV_LAND` (21) | `COMMAND_ACK` |
@@ -154,7 +162,13 @@ Toàn bộ domain chạy trên main thread nên không cần khóa; thread chỉ
 | Loại link mới (TCP, replay .tlog...) | lớp con của `core/links/base.py:Link` (4 hàm I/O) + đăng ký trong `LINK_TYPES` |
 | Dữ liệu mới từ PX4 | 1 `FactGroup` trong `core/vehicle/groups.py`, thêm vào `Vehicle.groups` + 1 property trong `qt/adapters.py:VehicleAdapter` |
 | Tính năng / trang mới | 1 dòng trong `qt/features.py` + 1 file `qml/pages/*.qml` |
-| Nhiều drone | tạo nhiều `Vehicle` theo sysid — các group đã lọc theo `vehicle.is_autopilot()` |
+| Nhiều drone | **chưa hỗ trợ** — cần VehicleRegistry / định tuyến theo (link, sysid); hiện 1 `Vehicle` với danh tính rõ ràng (xem dưới) |
+
+**Danh tính nguồn dữ liệu** (`core/vehicle/vehicle.py`, mục `vehicle:` trong `gcs.yaml`): autopilot chỉ
+nhận từ `autopilot_links` (thứ tự = ưu tiên — radio thật trước SITL; link hiện tại im lặng > 5 s mới
+chuyển); message PX4 lọc theo (link, sysid, compid); dữ liệu Jetson (`DRONE_*`) chỉ nhận từ
+`companion_link` + compid 191 + cùng sysid. Nguồn đang dùng hiện ở thẻ Flight Controller (Diagnostics).
+`gcs.yaml` được kiểm tra lúc khởi động (`core/config.py`) — sai thì báo lỗi cụ thể và không chạy.
 
 **Hiệu năng:** parse trên thread link, chuyển message theo lô; UI chỉ cập nhật khi có thay đổi
 và tối đa `ui_rate_hz`; Repeater trong QML dùng **số lượng** làm model để không tạo lại delegate
@@ -176,6 +190,7 @@ heartbeat GCS và xử lý theo tham số `NAV_DLL_ACT` — kiểm tra tham số
 
 ```bash
 cd ~/drone_ws/src/ground_station_ui && python3 -m pytest test/
+# hoặc qua ROS: colcon test --packages-select ground_station_ui (chạy toàn bộ test/)
 ```
 
 ## Lộ trình

@@ -7,12 +7,14 @@
 Toan bo domain chay tren main thread -> khong can khoa; thread chi o tang link.
 """
 
+import logging
 import time
 
 import yaml
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 
 from ground_station_ui.core.commands.sender import CommandSender
+from ground_station_ui.core.config import validate as validate_config
 from ground_station_ui.core.links.manager import LinkManager
 from ground_station_ui.core.maps.prefetch import Prefetcher
 from ground_station_ui.core.maps.tile_server import TileServer
@@ -37,6 +39,9 @@ from ground_station_ui.qt.mission_adapter import MissionAdapter
 from ground_station_ui.qt.ports import PortList
 
 
+log = logging.getLogger(__name__)
+
+
 class LinkBridge(QObject):
     """Chuyen callback tu thread cua link ve main thread."""
     messages = Signal(object, object)    # (link, [msgs])
@@ -44,8 +49,15 @@ class LinkBridge(QObject):
 
 
 def load_config():
-    with open(resource_dir('config') / 'gcs.yaml') as f:
-        return yaml.safe_load(f) or {}
+    path = resource_dir('config') / 'gcs.yaml'
+    with open(path) as f:
+        cfg = yaml.safe_load(f) or {}
+    errors, warnings = validate_config(cfg)
+    for w in warnings:
+        log.warning('%s: %s', path.name, w)
+    if errors:
+        raise ValueError(f'Cau hinh {path} sai:\n  - ' + '\n  - '.join(errors))
+    return cfg
 
 
 def app_info():
@@ -83,11 +95,15 @@ class GcsApp:
                                  on_messages=self.bridge.messages.emit,
                                  on_state=self.bridge.state.emit)
         self.links.attach(self.router)
-        self.vehicle = Vehicle(self.router)
+        self.vehicle = Vehicle(self.router, cfg.get('vehicle', {}))
+        # doi sang autopilot khac (vd SITL -> radio that): vet bay cu khong con dung
+        self.vehicle.on_identity_change.append(self.vehicle.groups['localPose'].clear_trail)
         self.px4_params = Px4ParamWatcher(self.vehicle, self.links)
         self.px4_params.attach(self.router)
-        self.commands = CommandSender(self.links)
+        self.commands = CommandSender(self.links)           # 3 nut duoi ban do -> Jetson
         self.commands.attach(self.router)
+        self.direct_commands = CommandSender(self.links)    # o PX4 tren thanh tren cung -> PX4 (915)
+        self.direct_commands.attach(self.router)
         self.uploader = MissionUploader(self.links)
         self.uploader.attach(self.router)
         self.mission = Mission(cfg.get('mission', {}).get('default_altitude', 20.0))
@@ -111,7 +127,9 @@ class GcsApp:
         self.env_qml = EnvironmentAdapter(self.vehicle, self.px4_params)
         self.telemetry_qml = TelemetryAdapter(self.vehicle, self.router, self.links)
         self.alerts_qml = AlertsAdapter(self.vehicle, self.links, self.env_qml)
-        self.commands_qml = CommandAdapter(self.commands, self.uploader, self.mission, cfg.get('commands', {}))
+        self.commands_qml = CommandAdapter(self.commands, self.direct_commands, self.uploader, self.mission,
+                                           self.vehicle, lambda: self.env_qml.state.get('effective', 'indoor'),
+                                           cfg.get('commands', {}))
 
         self._ticker = QTimer()
         self._ticker.timeout.connect(self._tick)
@@ -142,6 +160,8 @@ class GcsApp:
         self.vehicle.tick(now)
         self.links.tick(now)
         self.commands.tick(now)
+        self.direct_commands.tick(now)
+        self.commands_qml.tick(now)
         self.px4_params.tick(now)
         self.uploader.tick(now)
         self.vehicle_qml.flush()
@@ -156,6 +176,8 @@ class GcsApp:
 
     def shutdown(self):
         self._ticker.stop()
-        self.prefetcher.cancel()
+        # dung tai ban do TRUOC khi dong SQLite (tile server dong cache)
+        if not self.prefetcher.cancel_and_wait(6.0):
+            log.warning('Prefetch chua dung han khi tat app')
         self.links.stop_all()
         self.tiles.stop()

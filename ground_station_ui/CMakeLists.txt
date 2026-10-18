@@ -20,8 +20,8 @@ install(DIRECTORY qml config data images
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
-  # Tang core: Python thuan, khong can Qt / phan cung.
-  ament_add_pytest_test(test_core test/test_core.py)
+  # Python thuan, khong can Qt / phan cung.
+  ament_add_pytest_test(test_all test)        # toan bo test/ (core, maps, mission, lenh, cau hinh...)
 endif()
 
 ament_package()

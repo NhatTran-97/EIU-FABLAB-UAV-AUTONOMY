@@ -44,16 +44,22 @@ class MBTiles:
 
     def get(self, z, x, y):
         with self._lock:
-            row = self._db.execute(
-                'SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?',
-                (z, x, xyz_to_tms_row(z, y))).fetchone()
+            try:
+                row = self._db.execute(
+                    'SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?',
+                    (z, x, xyz_to_tms_row(z, y))).fetchone()
+            except sqlite3.ProgrammingError:
+                return None             # da dong (app dang tat)
         return row[0] if row else None
 
     def has(self, z, x, y):
         with self._lock:
-            return self._db.execute(
-                'SELECT 1 FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?',
-                (z, x, xyz_to_tms_row(z, y))).fetchone() is not None
+            try:
+                return self._db.execute(
+                    'SELECT 1 FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?',
+                    (z, x, xyz_to_tms_row(z, y))).fetchone() is not None
+            except sqlite3.ProgrammingError:
+                return False
 
     def put(self, z, x, y, data):
         if self.readonly:

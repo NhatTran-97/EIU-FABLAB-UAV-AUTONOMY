@@ -12,3 +12,5 @@ InstrumentPanel 1.0 InstrumentPanel.qml
 Axes3D 1.0 Axes3D.qml
 TelemetryCard 1.0 TelemetryCard.qml
 Splash 1.0 Splash.qml
+HoldButton 1.0 HoldButton.qml
+DirectCommandPopup 1.0 DirectCommandPopup.qml

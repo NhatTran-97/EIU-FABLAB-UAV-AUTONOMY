@@ -55,7 +55,7 @@ ScrollView {
 
             // ---------------- Position ----------------
             TelemetryCard {
-                Layout.fillHeight: true; Layout.fillWidth: true; Layout.maximumWidth: 420
+                Layout.fillHeight: true; Layout.fillWidth: true; Layout.preferredWidth: 1
                 title: "Position"
                 expectedHz: 4
                 icon: appInfo.imagesUrl + "position_icon.png"
@@ -88,7 +88,7 @@ ScrollView {
 
             // ---------------- Attitude ----------------
             TelemetryCard {
-                Layout.fillHeight: true; Layout.fillWidth: true; Layout.maximumWidth: 420
+                Layout.fillHeight: true; Layout.fillWidth: true; Layout.preferredWidth: 1
                 title: "Attitude"
                 expectedHz: 4
                 icon: appInfo.imagesUrl + "attitude_icon.png"
@@ -101,7 +101,7 @@ ScrollView {
 
             // ---------------- Velocity ----------------
             TelemetryCard {
-                Layout.fillHeight: true; Layout.fillWidth: true; Layout.maximumWidth: 420
+                Layout.fillHeight: true; Layout.fillWidth: true; Layout.preferredWidth: 1
                 title: "Velocity"
                 expectedHz: 4
                 icon: appInfo.imagesUrl + "velocity_icon.png"
@@ -115,7 +115,7 @@ ScrollView {
 
             // ---------------- Gimbal ----------------
             TelemetryCard {
-                Layout.fillHeight: true; Layout.fillWidth: true; Layout.maximumWidth: 420
+                Layout.fillHeight: true; Layout.fillWidth: true; Layout.preferredWidth: 1
                 title: "Gimbal"
                 expectedHz: 1.5
                 icon: appInfo.imagesUrl + "gimbal_icon.png"
@@ -131,7 +131,7 @@ ScrollView {
 
             // ---------------- Localization ----------------
             TelemetryCard {
-                Layout.fillHeight: true; Layout.fillWidth: true; Layout.maximumWidth: 420
+                Layout.fillHeight: true; Layout.fillWidth: true; Layout.preferredWidth: 1
                 readonly property bool indoor: flightEnv.state.effective === "indoor"
                 title: "Localization"
                 expectedHz: 1
@@ -147,7 +147,7 @@ ScrollView {
 
             // ---------------- Flight state ----------------
             TelemetryCard {
-                Layout.fillHeight: true; Layout.fillWidth: true; Layout.maximumWidth: 420
+                Layout.fillHeight: true; Layout.fillWidth: true; Layout.preferredWidth: 1
                 title: "Flight state"
                 expectedHz: 0.8
                 icon: appInfo.imagesUrl + "flight_state_icon.png"

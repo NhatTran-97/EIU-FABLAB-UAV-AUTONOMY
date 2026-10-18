@@ -35,6 +35,20 @@ def px4_profile(gps_ctrl, hgt_ref):
     return 'unknown'
 
 
+def resolve_environment(mode, profile, gps_fix):
+    """Moi truong ap dung -> (effective, source).
+
+    mode 'indoor' / 'outdoor' -> nguoi dung chon tay (source 'manual').
+    mode 'auto' -> theo bo tham so PX4 dang nap (source 'px4'); chua doc duoc tham so
+    (PX4 chua ket noi / gia tri la) -> tam theo GPS fix (source 'gps').
+    """
+    if mode in ('indoor', 'outdoor'):
+        return mode, 'manual'
+    if profile in ('indoor', 'outdoor'):
+        return profile, 'px4'
+    return ('outdoor' if (gps_fix or 0) >= 3 else 'indoor'), 'gps'
+
+
 class Px4ParamWatcher(FactGroup):
     """values: EKF2_GPS_CTRL, EKF2_HGT_REF (None = chua biet), profile."""
 
@@ -50,7 +64,7 @@ class Px4ParamWatcher(FactGroup):
         router.subscribe('PARAM_VALUE', self.on_param)
 
     def on_param(self, m, _link):
-        if not self.vehicle.is_autopilot(m):
+        if not self.vehicle.is_autopilot(m, _link):
             return
         name = m.param_id.rstrip('\x00') if isinstance(m.param_id, str) else m.param_id
         if name not in WATCHED:

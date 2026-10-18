@@ -12,12 +12,17 @@ Nguon can API key (vd Azure Maps): url co {key}, `key_env` = ten key -- lay tu b
 cung ten, khong co thi tu config/keys.yaml (file rieng, khong commit).
 Khong co key -> lop chi doc cache (van bay offline duoc); cache cung trong -> bo lop.
 
-Mat mang -> tam ngung tai online OFFLINE_BACKOFF_S giay de ban do khong cho timeout tung o.
+Mat mang THAT (khong phan giai DNS / mang khong toi duoc / bi tu choi ket noi) -> tam ngung tai online
+OFFLINE_BACKOFF_S giay de ban do khong cho timeout tung o. Loi rieng 1 o (timeout, reset, SSL, 429...)
+chi lam o do that bai -- KHONG ngung ca server: o zoom sau QtLocation xin rat nhieu o cung luc, 1 o
+cham ma ngung 30 s thi moi o chua cache bi 404 ngay, QtLocation thu 5 lan roi bo han -> mang o trong.
 """
 
+import errno
 import io
 import logging
 import os
+import socket
 import threading
 import time
 import urllib.error
@@ -32,6 +37,17 @@ log = logging.getLogger(__name__)
 USER_AGENT = 'drone-gcs/0.1 (offline tile cache)'
 FETCH_TIMEOUT_S = 5.0
 OFFLINE_BACKOFF_S = 30.0
+OFFLINE_ERRNOS = (errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN)
+
+
+def is_offline_error(err):
+    """True neu loi cho thay KHONG ra duoc mang (khong phai loi rieng cua 1 o)."""
+    reason = err.reason if isinstance(err, urllib.error.URLError) else err
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return False
+    if isinstance(reason, (socket.gaierror, ConnectionRefusedError)):
+        return True
+    return isinstance(reason, OSError) and reason.errno in OFFLINE_ERRNOS
 
 
 class MissingKey(Exception):
@@ -98,6 +114,8 @@ class TileServer:
         self.stats = {'cache_hits': 0, 'downloaded': 0, 'missing': 0}
         self._offline_until = 0.0
         self._httpd = None
+        self._inflight = {}            # (layer, z, x, y) -> [Event, ket qua]: single-flight
+        self._inflight_lock = threading.Lock()
 
     # --- trang thai mang -------------------------------------------------------------------
     @property
@@ -109,9 +127,30 @@ class TileServer:
 
     # --- lay 1 o ---------------------------------------------------------------------------
     def fetch_upstream(self, layer, z, x, y):
-        """Tai 1 o tu nguon online va luu cache. None neu loi / mat mang."""
+        """Tai 1 o tu nguon online va luu cache. None neu loi / mat mang.
+
+        Single-flight: tile server va prefetch cung thieu 1 o -> chi 1 request, ben kia doi ket qua.
+        """
         if not layer.url or not self.online or z > layer.max_zoom:
             return None
+        key = (layer.id, z, x, y)
+        with self._inflight_lock:
+            slot = self._inflight.get(key)
+            owner = slot is None
+            if owner:
+                slot = self._inflight[key] = [threading.Event(), None]
+        if not owner:
+            slot[0].wait(FETCH_TIMEOUT_S + 1.0)
+            return slot[1]
+        try:
+            slot[1] = self._download(layer, z, x, y)
+            return slot[1]
+        finally:
+            slot[0].set()
+            with self._inflight_lock:
+                self._inflight.pop(key, None)
+
+    def _download(self, layer, z, x, y):
         req = urllib.request.Request(layer.upstream_url(z, x, y), headers={'User-Agent': USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_S) as resp:
@@ -121,8 +160,11 @@ class TileServer:
                 layer._auth_warned = True
                 log.warning('Lop %s: nguon tu choi (%d) -- kiem tra API key / quota', layer.id, e.code)
             return None                 # o khong ton tai o nguon (vd vung bien) -- van dang online
-        except (urllib.error.URLError, OSError):
-            self.mark_offline()
+        except (urllib.error.URLError, OSError) as e:
+            if is_offline_error(e):
+                self.mark_offline()
+            else:                       # 1 o cham / loi -> chi o nay that bai, cac o khac van tai
+                log.debug('Lop %s: o %d/%d/%d loi tam thoi: %s', layer.id, z, x, y, e)
             return None
         if data:
             layer.cache.put(z, x, y, data)

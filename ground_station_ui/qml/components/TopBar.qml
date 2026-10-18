@@ -33,12 +33,24 @@ Rectangle {
         spacing: bar.width < 1400 ? 14 : 28            // cua so hep -> sat lai (logo nam o dau menu)
 
 
-        // PX4: ket noi + CHE DO BAY (to) + ARMED / DISARMED (noi bat khi armed)
+        // PX4: ket noi + CHE DO BAY (to) + ARMED / DISARMED (noi bat khi armed).
+        // Bam -> Take-off / Land GUI THANG PX4 qua radio 915 (3 nut duoi ban do di qua Jetson).
         Rectangle {
+            id: px4Chip
+            objectName: "px4Chip"
             Layout.preferredHeight: 48
             Layout.preferredWidth: px4Row.implicitWidth + 24
-            radius: Theme.radius; color: Theme.panelAlt
-            border.color: st.armed ? Theme.error : Theme.border; border.width: st.armed ? 2 : 1
+            radius: Theme.radius
+            color: px4Mouse.containsMouse || directPopup.opened ? Qt.lighter(Theme.panelAlt, 1.25) : Theme.panelAlt
+            border.color: st.armed ? Theme.error : (directPopup.opened ? Theme.accent : Theme.border)
+            border.width: st.armed || directPopup.opened ? 2 : 1
+            MouseArea {
+                id: px4Mouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: directPopup.opened ? directPopup.close() : directPopup.open()
+            }
             RowLayout {
                 id: px4Row
                 anchors.centerIn: parent; spacing: 12
@@ -68,6 +80,15 @@ Rectangle {
                         color: st.armed ? "white" : Theme.textDim; font.pixelSize: 13; font.bold: true
                     }
                 }
+                Text {                               // goi y: bam duoc
+                    text: directPopup.opened ? "▴" : "▾"
+                    color: Theme.textDim; font.pixelSize: 14
+                }
+            }
+
+            DirectCommandPopup {
+                id: directPopup
+                y: parent.height + 6
             }
         }
 

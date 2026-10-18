@@ -312,7 +312,8 @@ Item {
                         TextField {
                             id: coordInput
                             Layout.fillWidth: true
-                            placeholderText: "Enter coordinates: 11.052919, 106.666057"
+                            text: mapService.searchDefault          // dien san (gcs.yaml map.search_default)
+                            placeholderText: "Enter coordinates: lat, lon"
                             placeholderTextColor: Theme.textDim
                             color: Theme.text
                             background: null

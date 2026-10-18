@@ -240,3 +240,16 @@ def test_udp_link_learns_peer_and_replies():
         sitl.close()
     finally:
         link.stop()
+
+
+def test_resolve_environment_follows_px4_config():
+    from ground_station_ui.core.vehicle.params import resolve_environment
+    # chon tay -> giu nguyen, khong quan tam PX4 / GPS
+    assert resolve_environment('indoor', 'outdoor', 3) == ('indoor', 'manual')
+    assert resolve_environment('outdoor', 'indoor', 0) == ('outdoor', 'manual')
+    # auto -> theo bo tham so PX4, ke ca khi GPS noi nguoc lai
+    assert resolve_environment('auto', 'outdoor', 0) == ('outdoor', 'px4')
+    assert resolve_environment('auto', 'indoor', 3) == ('indoor', 'px4')
+    # chua doc duoc tham so -> tam theo GPS fix
+    assert resolve_environment('auto', 'unknown', 3) == ('outdoor', 'gps')
+    assert resolve_environment('auto', 'unknown', None) == ('indoor', 'gps')

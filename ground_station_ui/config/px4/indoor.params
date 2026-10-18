@@ -1,3 +1,5 @@
+# Bay TRONG NHA bang MTF-02 (optical flow + range, GPS tat). Hien dang bay GPS (outdoor.params);
+# khi lap lai MTF-02 va bay trong nha thi nap file nay. GIU LAI -- khong xoa.
 # Onboard parameters for Vehicle 1 -- INDOOR (khong GPS): MTF-02 optical flow + range tren TELEM3
 #
 # QGC: Vehicle Setup -> Parameters -> Tools -> Load from file -> chon file nay -> Reboot.

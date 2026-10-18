@@ -43,7 +43,11 @@ def main():
     sigint_timer.timeout.connect(lambda: None)
     sigint_timer.start(200)
 
-    gcs = GcsApp()
+    try:
+        gcs = GcsApp()
+    except ValueError as e:          # gcs.yaml sai: bao ro rang roi thoat
+        print(e, file=sys.stderr)
+        sys.exit(2)
     qml = resource_dir('qml')
     engine = QQmlApplicationEngine()
     for name, obj in gcs.context_properties().items():

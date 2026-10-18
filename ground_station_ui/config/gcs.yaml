@@ -17,6 +17,7 @@ map:
   cache_dir: data/maps                    # tuong doi = trong package (chep package la mang theo map)
   default_center: [10.8231, 106.6297]     # khi chua co vi tri drone
   default_zoom: 16
+  search_default: [11.052950, 106.666145]   # dien san o nhap toa do (tab Map) -- khu bay EIU
   max_prefetch_tiles: 30000
   layers:
     # nen = anh Google (net hon Esri o khu bay), nhan duong / dia danh = Esri
@@ -69,8 +70,11 @@ airspace:
   dirs:
     - data/airspace                       # trong package
 
-# Lenh bay tu nut Take-off / Land tren tab Map: COMMAND_LONG (NAV_TAKEOFF / NAV_LAND) gui qua
-# link `link` toi Jetson (sysid/compid cua drone_telemetry); cho COMMAND_ACK, het han thi gui lai.
+# Lenh bay, 2 duong rieng (khoa cheo: duong da gui lenh giu quyen den khi ve dat + disarm):
+#   - 3 nut duoi tab Map (Take-off / Land / Hold / RTL / Send WP): COMMAND_LONG qua `link` toi Jetson
+#     (sysid/compid cua drone_telemetry) -> DDS -> PX4
+#   - bam o PX4 tren thanh tren cung (Take-off / Land): COMMAND_LONG thang PX4 qua link autopilot (915)
+# Cho COMMAND_ACK, het han thi gui lai (ack_timeout_s, retries -- dung cho ca 2 duong).
 commands:
   link: jetson
   target_system: 1
@@ -82,6 +86,15 @@ commands:
 
 mission:
   default_altitude: 20     # m, do cao mac dinh cua waypoint moi
+
+# Danh tinh drone (1 drone). Autopilot chi nhan tu cac link trong autopilot_links, thu tu =
+# uu tien: radio that (px4) dang chay thi bo qua SITL; px4 im lang > 5 s moi chuyen sang link sau.
+# Du lieu Jetson (DRONE_*) chi nhan tu companion_link + compid 191 + cung sysid voi autopilot.
+vehicle:
+  autopilot_links: [px4, sitl]
+  # sysid: 1                 # co dinh sysid autopilot (mac dinh: theo heartbeat)
+  companion_link: jetson
+  companion_compid: 191
 
 links:
   - name: px4
