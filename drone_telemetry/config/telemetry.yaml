@@ -1,0 +1,84 @@
+# drone_telemetry: telemetry + lenh qua radio SiK 433 MHz (MAVLink v2, drone_dialect).
+drone_telemetry:
+  ros__parameters:
+    port: /dev/ttyUSB0          # Jetson: /dev/telem_radio (udev, script/udev/setup_radio_udev.sh)
+    baud: 57600                 # = SERIAL_SPEED cua radio (ATI5: SERIAL_SPEED=57)
+    system_id: 1
+    component_id: 191           # MAV_COMP_ID_ONBOARD_COMPUTER
+
+    send_rate_hz: 1.0           # chu ky gui toan bo; doi trang thai -> gui ngay
+    heartbeat_rate_hz: 1.0
+    stale_timeout_s: 3.0        # khong co du lieu -> STALE / NO_DATA
+
+    # Thu tu = thu tu gui. id phai khop enum DRONE_COMPONENT trong mavlink/drone_telemetry.xml
+    components: [lidar, gimbal, camera, px4]
+
+    lidar:
+      id: 1
+      source: diagnostics
+      diag_name: "stl_50b2_driver: lidar"
+      state_key: state
+      rate_key: scan_rate_hz
+
+    gimbal:
+      id: 2
+      source: diagnostics
+      diag_name: skydroid/gimbal
+      state_key: state
+      # attitude_hz la gia tri cau hinh -> tinh tan so tu bo dem total_attitudes
+      count_key: total_attitudes
+
+    camera:
+      id: 3
+      source: diagnostics
+      diag_name: skydroid/camera/RGB
+      state_key: state
+      rate_key: measured_fps
+
+    px4:
+      id: 4
+      source: topic             # PX4 khong co /diagnostics -> dem message
+      topic: /fmu/out/vehicle_local_position_v1
+      msg_type: px4_msgs/msg/VehicleLocalPosition
+      min_rate_hz: 10.0         # thap hon -> WARN / LOW_RATE
+
+    # vehicle_odometry -> DRONE_LOCAL_POSE (trang 3D cua GCS).
+    pose:
+      enabled: true
+      topic: /fmu/out/vehicle_odometry
+      msg_type: px4_msgs/msg/VehicleOdometry
+      rate_hz: 5.0              # ~60 B/goi -> 300 B/s tren radio 433 (~2 KB/s)
+      max_age_s: 0.5            # mau cu hon -> khong gui
+
+    # vehicle_global_position -> GLOBAL_POSITION_INT (~40 B, 2 Hz ~80 B/s): ban do GCS khi khong co link 915.
+    global_position:
+      enabled: true
+      topic: /fmu/out/vehicle_global_position
+      rate_hz: 2.0
+      max_age_s: 1.0
+
+    # /gimbal_state -> DRONE_GIMBAL_STATE (~30 B, 2 Hz ~60 B/s).
+    gimbal_state:
+      enabled: true
+      topic: /gimbal_state
+      msg_type: skydroid_msgs/msg/GimbalState
+      rate_hz: 2.0
+      max_age_s: 1.5
+
+    # Lenh ground: Take-off / Land / Hold / RTL / Start mission + nhan waypoint (/gcs/mission, JSON).
+    # Luat an toan: drone_telemetry/commands.py.
+    commands:
+      enabled: true
+      # Take-off / Land: mission = mission_manager -> offboard_control (OFFBOARD)
+      #                  px4     = VehicleCommand (che do Takeoff / Land cua PX4)
+      # Hold / RTL: luon VehicleCommand.
+      takeoff_land_via: mission
+      gcs_command_topic: /gcs/command          # -> mission_manager (JSON {id, cmd, alt})
+      gcs_command_ack_topic: /gcs/command_ack  # <- mission_manager (JSON {id, result, text})
+      px4_system_id: 1
+      command_topic: /fmu/in/vehicle_command
+      ack_topic: ""          # rong = suy tu MESSAGE_VERSION (1.17: vehicle_command_ack, 1.18: ..._v1)
+      control_mode_topic: /fmu/out/vehicle_control_mode   # armed (VehicleStatus lech phien ban)
+      land_topic: /fmu/out/vehicle_land_detected
+      global_topic: /fmu/out/vehicle_global_position
+      mission_topic: /gcs/mission

@@ -27,3 +27,11 @@ ground_gui/index/
 script/Miniconda3-latest-Linux-aarch64.sh
 ground_station_ui/config/keys.yaml
 ground_station_ui/data/maps/*.mbtiles
+ground_station_ui/data/maps/*.mbtiles-*
+ground_station_ui/data/tracks/
+ground_station_ui/tools/drone_model/*.blend*
+ground_station_ui/tools/drone_model/preview*.png
+ground_station_ui/tools/drone_model/*.[sS][tT][eE][pP]
+ground_station_ui/tools/drone_model/*.[sS][tT][pP]
+!ground_station_ui/scripts/
+!drone_telemetry/scripts/

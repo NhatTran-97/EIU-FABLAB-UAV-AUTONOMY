@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>drone_telemetry</name>
+  <version>0.0.0</version>
+  <description>Gui trang thai + tan so cac thiet bi tren drone xuong dashboard qua radio SiK (MAVLink v2, dialect rieng)</description>
+  <maintainer email="nhat.tranduy1997@gmail.com">duynhat</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>rosidl_runtime_py</exec_depend>
+  <exec_depend>px4_msgs</exec_depend>
+  <exec_depend>skydroid_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>python3-serial</exec_depend>
+
+  <test_depend>ament_cmake_pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
