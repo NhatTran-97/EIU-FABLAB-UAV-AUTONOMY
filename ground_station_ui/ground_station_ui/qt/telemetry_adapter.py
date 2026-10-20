@@ -18,7 +18,7 @@ SIGNALS = {
     'RSSI 915 (dBm)': ('@links', 'px4', ('RADIO_STATUS',)),
     'Gimbal pitch (°)': ('gimbal', 'pitch', ('DRONE_GIMBAL_STATE',)),
 }
-FRESH_S = 2.5     # message nguon cu hon -> KHONG lay mau (do thi ngat, khong ve duong ngang gia)
+FRESH_S = 2.5     # message nguon cu hon -> bo mau (do thi ngat quang)
 
 
 class TelemetryAdapter(QObject):

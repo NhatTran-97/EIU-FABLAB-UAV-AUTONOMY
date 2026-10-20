@@ -12,10 +12,11 @@ import signal
 import sys
 from pathlib import Path
 
-try:
-    import ground_station_ui  # noqa: F401
-except ImportError:   # chay thang tu source, chua build
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Chay tu source tree (co config/ canh package): uu tien package source hon ban trong install/.
+# Ban cai (ros2 run ... gcs) nam o lib/<pkg>/, khong co config/ -> khong doi sys.path.
+_SRC = Path(__file__).resolve().parents[1]
+if (_SRC / 'config').is_dir():
+    sys.path.insert(0, str(_SRC))
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QGuiApplication, QIcon
@@ -28,7 +29,7 @@ from ground_station_ui.qt.app import GcsApp
 def main():
     QGuiApplication.setOrganizationName('fablab')
     QGuiApplication.setApplicationName('drone-gcs')
-    # ten khop file .desktop (scripts/install_desktop.sh) -> dock / thanh tac vu dung dung icon
+    # trung ten file .desktop (scripts/install_desktop.sh) -> icon dock / taskbar
     QGuiApplication.setDesktopFileName('drone-gcs')
     app = QGuiApplication(sys.argv)
     app.setApplicationDisplayName('EIU Drone GCS')
@@ -36,8 +37,7 @@ def main():
     for size in (32, 48, 64, 128, 256, 512):
         icon.addFile(str(resource_dir('images') / 'icons' / f'drone-gcs-{size}.png'))
     app.setWindowIcon(icon)
-    # Ctrl+C trong terminal: vong lap Qt khong tra quyen cho Python -> timer nho de Python
-    # kip xu ly SIGINT
+    # SIGINT: event loop Qt khong tra quyen cho Python -> timer rong de Python xu ly signal
     signal.signal(signal.SIGINT, lambda *_: app.quit())
     sigint_timer = QTimer()
     sigint_timer.timeout.connect(lambda: None)
@@ -45,7 +45,7 @@ def main():
 
     try:
         gcs = GcsApp()
-    except ValueError as e:          # gcs.yaml sai: bao ro rang roi thoat
+    except ValueError as e:          # gcs.yaml loi
         print(e, file=sys.stderr)
         sys.exit(2)
     qml = resource_dir('qml')
@@ -58,7 +58,7 @@ def main():
         sys.exit(1)
 
     ret = app.exec()
-    # Huy QML truoc cac object Python: tranh binding doc object da bi xoa khi thoat
+    # Huy engine QML truoc object Python: binding khong doc object da huy
     del engine
     gcs.shutdown()
     sys.exit(ret)

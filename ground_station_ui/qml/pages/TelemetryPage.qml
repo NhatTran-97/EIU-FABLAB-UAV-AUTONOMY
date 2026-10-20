@@ -3,8 +3,8 @@ import QtQuick.Layouts
 import QtQuick.Controls.Basic
 import "../components"
 
-// Telemetry: GIA TRI hien tai cua drone (vi tri, tu the, van toc, gimbal, dinh vi, trang thai bay)
-// + do thi thoi gian thuc. Suc khoe thiet bi (healthy / loi / tan so node) o tab Diagnostics.
+// Telemetry: gia tri hien tai (vi tri, tu the, van toc, gimbal, dinh vi, trang thai bay) + do thi.
+// Suc khoe thiet bi: tab Diagnostics.
 ScrollView {
     id: page
     clip: true
@@ -46,7 +46,7 @@ ScrollView {
             Text { text: "  live vehicle values  ·  device health: Diagnostics"; color: Theme.textDim; font.pixelSize: 12 }
         }
 
-        // Luoi: so cot theo do rong; cac the cung hang CAO BANG NHAU (Layout.fillHeight)
+        // luoi: so cot theo do rong; the cung hang cao bang nhau (Layout.fillHeight)
         GridLayout {
             id: cards
             Layout.fillWidth: true
@@ -192,7 +192,7 @@ ScrollView {
                     readonly property real windowS: parseInt(rng.currentText)
                     Connections {
                         target: telemetry
-                        enabled: page.visible              // trang an -> khong ve lai (tiet kiem CPU)
+                        enabled: page.visible              // trang an -> khong ve lai
                         function onChanged() {
                             if (plot.paused) return
                             plot.pts = telemetry.series(sig.currentText, plot.windowS)
@@ -232,7 +232,7 @@ ScrollView {
                         ctx.strokeStyle = "#5b9cf0"; ctx.lineWidth = 2; ctx.beginPath()
                         for (var j = 0; j < pts.length; j++) {
                             var px = X(pts[j][0]), py = Y(pts[j][1])
-                            // khoang trong > 1 s (mat du lieu) -> ngat net, khong noi qua
+                            // khoang trong > 1 s -> ngat net
                             if (j === 0 || pts[j][0] - pts[j - 1][0] > 1.0) ctx.moveTo(px, py); else ctx.lineTo(px, py)
                         }
                         ctx.stroke()

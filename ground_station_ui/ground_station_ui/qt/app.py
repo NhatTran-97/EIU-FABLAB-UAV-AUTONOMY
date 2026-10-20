@@ -95,20 +95,24 @@ class GcsApp:
                                  on_messages=self.bridge.messages.emit,
                                  on_state=self.bridge.state.emit)
         self.links.attach(self.router)
-        self.vehicle = Vehicle(self.router, cfg.get('vehicle', {}))
-        # doi sang autopilot khac (vd SITL -> radio that): vet bay cu khong con dung
+        # thu muc GPX: tracks.dir (mac dinh data/tracks)
+        vcfg = dict(cfg.get('vehicle', {}))
+        vcfg.setdefault('track_dir', str(data_path((cfg.get('tracks') or {}).get('dir', 'data/tracks'))))
+        self.vehicle = Vehicle(self.router, vcfg)
+        # doi autopilot -> xoa vet (khac nguon / khung toa do)
         self.vehicle.on_identity_change.append(self.vehicle.groups['localPose'].clear_trail)
+        self.vehicle.on_identity_change.append(self.vehicle.groups['track'].clear)
         self.px4_params = Px4ParamWatcher(self.vehicle, self.links)
         self.px4_params.attach(self.router)
-        self.commands = CommandSender(self.links)           # 3 nut duoi ban do -> Jetson
+        self.commands = CommandSender(self.links)           # lenh qua companion (433)
         self.commands.attach(self.router)
-        self.direct_commands = CommandSender(self.links)    # o PX4 tren thanh tren cung -> PX4 (915)
+        self.direct_commands = CommandSender(self.links)    # lenh thang autopilot (915)
         self.direct_commands.attach(self.router)
         self.uploader = MissionUploader(self.links)
         self.uploader.attach(self.router)
         self.mission = Mission(cfg.get('mission', {}).get('default_altitude', 20.0))
 
-        # Ban do offline: tile server cuc bo (cache .mbtiles), QtLocation doc qua localhost
+        # tile server localhost, cache .mbtiles (chay offline)
         map_cfg = cfg.get('map', {})
         self.tiles = TileServer(map_cfg.get('layers', []),
                                 data_path(map_cfg.get('cache_dir', 'data/maps')),
@@ -116,7 +120,7 @@ class GcsApp:
         self.tiles.start()
         self.prefetcher = Prefetcher(self.tiles)
 
-        # Adapter tao SAU vehicle/links; LinksAdapter co the tu ket noi link da nho
+        # adapter tao sau vehicle / links (LinksAdapter co the auto-connect)
         self.vehicle_qml = VehicleAdapter(self.vehicle)
         self.links_qml = LinksAdapter(self.links)
         self.ports_qml = PortList()
@@ -131,6 +135,7 @@ class GcsApp:
                                            self.vehicle, lambda: self.env_qml.state.get('effective', 'indoor'),
                                            cfg.get('commands', {}))
 
+        self._tick_errors = {}            # buoc -> t log loi cuoi
         self._ticker = QTimer()
         self._ticker.timeout.connect(self._tick)
         self._ticker.start(int(1000 / float(cfg.get('ui_rate_hz', 5))))
@@ -156,27 +161,39 @@ class GcsApp:
         self.router.dispatch(link.name, msgs)
 
     def _tick(self):
+        """UiTicker (ui_rate_hz): tick domain -> flush adapter. Moi buoc try/except rieng: loi 1 buoc
+        khong chan cac buoc sau."""
         now = time.monotonic()
-        self.vehicle.tick(now)
-        self.links.tick(now)
-        self.commands.tick(now)
-        self.direct_commands.tick(now)
-        self.commands_qml.tick(now)
-        self.px4_params.tick(now)
-        self.uploader.tick(now)
-        self.vehicle_qml.flush()
-        self.links_qml.flush()
-        self.map_qml.flush()
-        self.mission_qml.flush()
-        self.commands_qml.flush()
-        self.env_qml.flush()
-        self.voice_qml.tick()
-        self.alerts_qml.flush()
-        self.telemetry_qml.flush()
+        steps = (
+            ('vehicle', lambda: self.vehicle.tick(now)),
+            ('links', lambda: self.links.tick(now)),
+            ('commands', lambda: self.commands.tick(now)),
+            ('direct_commands', lambda: self.direct_commands.tick(now)),
+            ('commands_qml.tick', lambda: self.commands_qml.tick(now)),
+            ('px4_params', lambda: self.px4_params.tick(now)),
+            ('uploader', lambda: self.uploader.tick(now)),
+            ('vehicle_qml', self.vehicle_qml.flush),
+            ('links_qml', self.links_qml.flush),
+            ('map_qml', self.map_qml.flush),
+            ('mission_qml', self.mission_qml.flush),
+            ('commands_qml', self.commands_qml.flush),
+            ('env_qml', self.env_qml.flush),
+            ('voice', self.voice_qml.tick),
+            ('alerts_qml', self.alerts_qml.flush),
+            ('telemetry_qml', self.telemetry_qml.flush),
+        )
+        for name, step in steps:
+            try:
+                step()
+            except Exception:                            # log <= 1 lan / 10 s moi buoc
+                last = self._tick_errors.get(name, 0.0)
+                if now - last > 10.0:
+                    self._tick_errors[name] = now
+                    log.exception('UI tick: buoc %s loi (cac buoc khac van chay)', name)
 
     def shutdown(self):
         self._ticker.stop()
-        # dung tai ban do TRUOC khi dong SQLite (tile server dong cache)
+        # dung prefetch truoc khi tile server dong SQLite
         if not self.prefetcher.cancel_and_wait(6.0):
             log.warning('Prefetch chua dung han khi tat app')
         self.links.stop_all()

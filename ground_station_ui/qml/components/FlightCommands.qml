@@ -2,16 +2,14 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 
-// Nut Take-off / Land / Hold / RTL / Send WP (giua duoi ban do) -> JETSON (radio 433 -> DDS -> PX4).
-// Lenh thang PX4 (915) nam o o PX4 tren thanh tren cung (TopBar). Moi nut khoa theo commands.gates.jetson
-// (mat Jetson, Jetson khong co du lieu PX4, khong GPS, khoa cheo khi duong PX4 dang giu quyen --
-// core/commands/flight.py). Phai GIU nut xac nhan 1 giay de tranh bam nham.
+// Take-off / Land / Hold / RTL / Send WP qua Jetson (radio 433 -> DDS -> PX4).
+// Khoa theo commands.gates.jetson (xem core/commands/flight.py). Xac nhan: giu nut 1 s.
+// Lenh thang PX4 (915): DirectCommandPopup (TopBar).
 Item {
     id: root
     readonly property var g: commands.gates.jetson || ({})      // action -> ly do khoa ('' = mo)
-    // 🧪 che do TEST (phong thi nghiem): Take-off / Land / Send WP mo khoa, gui thang Jetson bo qua
-    // dieu kien phia GCS (DDS, GPS, khoa cheo) -- de xem lenh co len Jetson + phan hoi ve khong.
-    // Khong luu: tat app / bam Test lan nua -> ve binh thuong (ra ngoai bay van du dieu kien).
+    // che do test: Take-off / Land / Send WP bo qua dieu kien phia GCS (DDS, GPS, khoa cheo).
+    // Khong luu qua lan chay app.
     property bool testMode: false
     readonly property var testable: ["takeoff", "land", "upload"]
     function open(a) { return (testMode && testable.indexOf(a) >= 0) || g[a] === "" }
@@ -54,7 +52,7 @@ Item {
         case "accepted":    return "✓ " + st.label + ": accepted by Jetson" + took
         case "rejected":    return "✕ " + st.label + ": temporarily rejected" + step
         case "denied":      return "✕ " + st.label + ": denied by Jetson — see PX4 messages"
-        // Jetson ban cu chua biet ping -> van tra ACK: lenh DA len toi Jetson
+        // Link test + UNSUPPORTED: drone_telemetry chua co ping, nhung goi da toi Jetson
         case "unsupported": return st.label === "Link test" ? "✓ Link test: reached Jetson" + took
                                                               + " (old drone_telemetry — rebuild for ping)"
                                                             : "✕ " + st.label + ": not supported"
@@ -67,7 +65,7 @@ Item {
     }
     // ly do khoa cua cac nut dang hien (gop trung) -> dong trang thai khi ranh
     function lockText() {
-        var acts = inAir ? ["upload", "hold", "rtl", "land"] : ["takeoff", "upload", "land"]
+        var acts = inAir ? ["upload", "mission", "hold", "rtl", "land"] : ["takeoff", "upload", "land"]
         var seen = []
         for (var i = 0; i < acts.length; i++) {
             var why = g[acts[i]]
@@ -107,14 +105,22 @@ Item {
                         + (root.confirming === "takeoff" ? "Take off? (" + flightEnv.state.effectiveLabel + ")"
                         : root.confirming === "land" ? "Land at current position?"
                         : root.confirming === "rtl" ? "Return to launch and land?"
+                        : root.confirming === "mission" ? "Fly the waypoints sent to Jetson?"
                         : "Send " + root.wpCount + " waypoints to Jetson?")
                     color: Theme.text; font.pixelSize: 15; font.bold: true
                 }
                 Text {
-                    visible: root.confirming === "takeoff" || root.confirming === "land" || root.confirming === "rtl"
+                    visible: root.confirming === "takeoff" || root.confirming === "land" || root.confirming === "rtl" || root.confirming === "mission"
                     Layout.alignment: Qt.AlignHCenter
                     text: "via Jetson · 433  (Jetson → DDS → PX4)"
                     color: Theme.textDim; font.pixelSize: 12
+                }
+                Text {
+                    visible: root.confirming === "mission"
+                    Layout.alignment: Qt.AlignHCenter; Layout.maximumWidth: 420; wrapMode: Text.WordWrap
+                    text: "Uses the waypoints last sent with Send WP" + (root.up.state === "done" ? " ✓" : " (send them first)")
+                        + ". At the end the drone hovers at the last waypoint."
+                    color: root.up.state === "done" ? Theme.textDim : Theme.warn; font.pixelSize: 12
                 }
                 RowLayout {
                     visible: root.confirming === "takeoff"
@@ -178,15 +184,14 @@ Item {
                     }
                 }
                 RowLayout {
-                    visible: root.confirming === "takeoff" || root.confirming === "land" || root.confirming === "rtl"
+                    visible: root.confirming === "takeoff" || root.confirming === "land" || root.confirming === "rtl" || root.confirming === "mission"
                     spacing: 10
                     Button { text: "Cancel"; onClicked: root.confirming = "" }
                     // giu 1 giay de xac nhan
                     Rectangle {
                         id: holdBtn
                         objectName: "holdConfirm"
-                        // khoa: dieu kien cua lenh mat trong luc mo hop (gates), hoac Take-off co van de
-                        // nghiem trong o pre-flight
+                        // khoa: gates thay doi khi hop dang mo, hoac pre-flight co loi critical (Take-off)
                         readonly property bool testing: root.testMode && root.testable.indexOf(root.confirming) >= 0
                         readonly property string gateWhy: testing ? "" : (root.g[root.confirming] || "")
                         readonly property bool blocked: gateWhy !== ""
@@ -216,6 +221,7 @@ Item {
                                 else if (holdBtn.testing) commands.testLand()
                                 else if (root.confirming === "takeoff") commands.takeoff(altBox.meters)
                                 else if (root.confirming === "rtl") commands.rtl()
+                                else if (root.confirming === "mission") commands.startMission()
                                 else commands.land()
                                 root.confirming = ""
                                 holdBtn.progress = 0
@@ -232,7 +238,7 @@ Item {
             }
         }
 
-        // ---- bang TEST (phong thi nghiem): gui toi Jetson bo qua dieu kien phia GCS ----
+        // ---- bang test: gui Jetson, bo qua dieu kien phia GCS ----
         Rectangle {
             objectName: "testPanel"
             visible: root.testMode && root.confirming === ""
@@ -262,7 +268,7 @@ Item {
                     ToolTip.visible: hovered; ToolTip.text: "Jetson replies ACK + message, does nothing with PX4"
                     onClicked: commands.ping()
                 }
-                // tra loi cua Jetson / PX4 (STATUSTEXT) moi nhat -- thay ngay lenh co len toi Jetson khong
+                // STATUSTEXT moi nhat tu Jetson / PX4
                 Text { text: "Latest messages"; color: Theme.textDim; font.pixelSize: 11 }
                 Repeater {
                     model: Math.min(3, vehicle.messages.items.length)
@@ -297,7 +303,7 @@ Item {
             CmdBtn {
                 objectName: "takeoffBtn"
                 label: "⬆  Take-off"; tint: Theme.ok
-                // dang bay: an Take-off (tranh bam nham), chi con Send WP / Land
+                // dang bay: an Take-off
                 visible: !root.inAir
                 enabled: root.open("takeoff")
                 active: root.confirming === "takeoff"
@@ -323,6 +329,15 @@ Item {
                 onClicked: { root.confirming = ""; commands.hold() }
             }
             CmdBtn {
+                objectName: "missionBtn"
+                visible: root.inAir
+                label: "▶  Start mission"; tint: Theme.ok
+                implicitWidth: 170
+                enabled: root.open("mission")
+                active: root.confirming === "mission"
+                onClicked: root.confirming = root.confirming === "mission" ? "" : "mission"
+            }
+            CmdBtn {
                 objectName: "rtlBtn"
                 visible: root.inAir
                 label: "⌂  RTL"; tint: Theme.warn
@@ -339,7 +354,7 @@ Item {
             }
             CmdBtn {
                 objectName: "testBtn"
-                // luon bam duoc: kiem tra duong Jetson khi cac nut khac dang khoa (phong thi nghiem)
+                // luon mo: ping Jetson
                 label: root.testMode ? "🧪  Test ON" : "🧪  Test"; tint: root.testMode ? Theme.warn : Theme.textDim
                 implicitWidth: root.testMode ? 120 : 96
                 active: root.testMode
@@ -350,7 +365,7 @@ Item {
         // ---- trang thai lenh ----
         Rectangle {
             readonly property string busyMsg: [root.stateText(), root.uploadText()].filter(t => t !== "").join("   ·   ")
-            // ranh: ly do khoa (che do test: nhac dang bo qua dieu kien)
+            // khi ranh: ly do khoa / canh bao che do test
             readonly property string msg: busyMsg !== "" ? busyMsg
                                         : root.testMode ? "🧪 TEST MODE — GCS checks off, buttons send straight to Jetson"
                                         : root.lockText()

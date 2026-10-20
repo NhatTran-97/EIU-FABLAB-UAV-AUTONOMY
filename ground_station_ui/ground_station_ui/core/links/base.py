@@ -1,14 +1,13 @@
 """Link: 1 duong truyen MAVLink (lop chung cho Serial / UDP / ...).
 
 Lop con chi can cai dat 4 ham I/O: _open, _read, _write, _close. Lop chung lo:
-  * Thread doc: doc -> parse -> goi on_messages(link, [msgs]) THEO LO (khong phai tung message):
-    PX4 gui ~100 msg/s, gom lo giam so lan chuyen sang main thread.
-  * Thread heartbeat GCS 1 Hz, tach khoi UI: UI co dung thi PX4 van nhan heartbeat
-    (mat heartbeat GCS -> PX4 kich hoat failsafe NAV_DLL_ACT). Heartbeat cung lam radio SiK
-    chen RADIO_STATUS (RSSI); SiK 1.9 chi nhan dien heartbeat v1 -> tuy chon heartbeat_v1.
-  * Loi / mat thiet bi -> tu mo lai moi RECONNECT_S cho toi khi stop().
+  * Thread doc: read -> parse -> on_messages(link, [msgs]) theo lo (PX4 ~100 msg/s; giam so lan
+    chuyen sang main thread).
+  * Thread heartbeat GCS 1 Hz, doc lap voi UI (mat heartbeat GCS -> failsafe NAV_DLL_ACT). Heartbeat
+    cung kich SiK chen RADIO_STATUS; SiK 1.9 chi nhan heartbeat v1 -> tuy chon heartbeat_v1.
+  * Loi I/O -> mo lai moi RECONNECT_S den khi stop().
 
-Callback on_messages / on_state duoc goi tu thread cua link: ben Qt chuyen ve main thread.
+on_messages / on_state chay tren thread cua link; tang Qt chuyen ve main thread.
 """
 
 import threading
@@ -32,7 +31,7 @@ class Link:
 
         self.status = 'Not connected'
         self.is_open = False
-        self.active = False            # nguoi dung muon ket noi
+        self.active = False            # trang thai yeu cau (Connect / Disconnect)
         self.rx_bytes = 0
         self.tx_bytes = 0
 
@@ -63,14 +62,15 @@ class Link:
     def start(self):
         self.stop()
         self.active = True
-        # Event rieng moi lan: thread cua lan truoc khong 'song lai' khi bam Connect lai nhanh
+        # dat trang thai truoc khi start thread: thread co the ghi 'Open ...' ngay lap tuc
+        self._set_status(f'Opening {self.describe()}...')
+        # Event moi cho moi lan start: thread cu khong bi danh thuc boi lan Connect sau
         self._stop = stop = threading.Event()
         self._reader = threading.Thread(target=self._run, args=(stop,),
                                         name=f'{self.name}-rx', daemon=True)
         self._reader.start()
         threading.Thread(target=self._heartbeat_loop, args=(stop,),
                          name=f'{self.name}-hb', daemon=True).start()
-        self._set_status(f'Opening {self.describe()}...')
 
     def stop(self):
         self.active = False
@@ -121,7 +121,7 @@ class Link:
                 stop.wait(RECONNECT_S)
                 continue
             with self._lock:
-                if stop.is_set():          # stop() duoc goi trong luc dang mo
+                if stop.is_set():          # stop() trong luc _open
                     self._close(handle)
                     return
                 self._handle = handle
@@ -139,7 +139,7 @@ class Link:
         while not stop.is_set():
             try:
                 data = self._read(handle)
-            except (OSError, TypeError):    # TypeError: pyserial khi cong bi dong tu thread khac
+            except (OSError, TypeError):    # TypeError: pyserial, cong bi dong tu thread khac
                 return
             if not data:
                 continue

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Tao loi tat "EIU Drone GCS" trong menu ung dung (chi cho user hien tai, khong can sudo):
+#   icon   -> ~/.local/share/icons/hicolor/<size>/apps/drone-gcs.png
+#   desktop-> ~/.local/share/applications/drone-gcs.desktop
+# Chay trong moi truong python dung de chay app (vd: conda activate drone_env), hoac PYTHON=...
+# Go bo: ./install_desktop.sh --uninstall
+set -euo pipefail
+
+PKG_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+ICONS="$HOME/.local/share/icons/hicolor"
+DESKTOP="$HOME/.local/share/applications/drone-gcs.desktop"
+
+if [[ "${1:-}" == "--uninstall" ]]; then
+    rm -f "$DESKTOP"
+    for s in 32 48 64 128 256 512; do rm -f "$ICONS/${s}x${s}/apps/drone-gcs.png"; done
+    update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+    echo "Da go loi tat EIU Drone GCS"; exit 0
+fi
+
+PYTHON="${PYTHON:-$(command -v python3 || command -v python)}"
+for s in 32 48 64 128 256 512; do
+    install -Dm644 "$PKG_DIR/images/icons/drone-gcs-$s.png" "$ICONS/${s}x${s}/apps/drone-gcs.png"
+done
+mkdir -p "$(dirname "$DESKTOP")"
+cat > "$DESKTOP" <<DESK
+[Desktop Entry]
+Type=Application
+Name=EIU Drone GCS
+Comment=Ground Control & Autonomous Flight Platform
+Exec=$PYTHON $PKG_DIR/ground_station_ui/main.py
+Path=$PKG_DIR/ground_station_ui
+Icon=drone-gcs
+Terminal=false
+Categories=Science;Engineering;
+StartupWMClass=drone-gcs
+DESK
+gtk-update-icon-cache -f -t "$ICONS" 2>/dev/null || true
+update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+echo "Da tao loi tat: $DESKTOP"
+echo "  python: $PYTHON"

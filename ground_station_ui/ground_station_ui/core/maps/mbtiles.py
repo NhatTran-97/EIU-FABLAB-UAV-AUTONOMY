@@ -77,7 +77,7 @@ class MBTiles:
                 pass        # app dang tat: o tai xong sau khi da dong file -- bo qua
 
     def stats(self):
-        """(so o, dung luong byte) -- KHONG khoa, goi tu main thread duoc."""
+        """(so o, byte). Khong lay khoa; an toan tu main thread."""
         size = 0
         for p in (self.path, self.path.with_name(self.path.name + '-wal')):
             try:

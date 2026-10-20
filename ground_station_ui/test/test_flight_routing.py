@@ -39,6 +39,7 @@ class FakeVehicle:
     def __init__(self, px4_alive=True, jetson_alive=True, landed='ON GROUND', armed=False,
                  fix=3, alt_global=None, dds='ok'):
         self.sysid, self.compid, self.link = (1, 1, 'px4') if px4_alive else (None, None, None)
+        self.companion_link = 'jetson'
         comps = [{'id': mavlink.DRONE_COMPONENT_PX4, 'level': dds}] if dds else []
         self.groups = {'status': Group(linkAlive=px4_alive, landed=landed, armed=armed),
                        'companion': Group(comps, linkAlive=jetson_alive),
@@ -184,3 +185,16 @@ def test_test_mode_bypasses_gcs_gates_and_ping():
     assert jet.sent[-1].command == mavlink.MAV_CMD_USER_1 and px4.sent == []
     s['jetson'].on_ack(ack(mavlink.MAV_CMD_USER_1, mavlink.MAV_RESULT_ACCEPTED, compid=191), 'jetson')
     assert s['jetson'].values['state'] == 'accepted'
+
+
+def test_start_mission_gates_and_command():
+    fc, s, px4, jet = make(landed='ON GROUND')
+    assert not fc.execute('jetson', 'mission')                 # o dat
+    assert s['jetson'].values['message'] == 'vehicle is on the ground'
+    fc, s, px4, jet = make(landed='IN AIR', armed=True, fix=0)
+    assert fc.blocker('jetson', 'mission') == 'mission needs GPS fix'   # waypoint la toa do GPS
+    fc, s, px4, jet = make(landed='IN AIR', armed=True, fix=3)
+    assert fc.execute('jetson', 'mission')
+    m = jet.sent[-1]
+    assert (m.target_component, m.command) == (191, mavlink.MAV_CMD_MISSION_START) and px4.sent == []
+    assert s['jetson'].values['label'] == 'Start mission'

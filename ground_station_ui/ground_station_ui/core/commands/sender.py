@@ -2,17 +2,15 @@
 
     GCS ──COMMAND_LONG(confirmation=0,1,2..)──► dich (Jetson / PX4)
         ◄──────────── COMMAND_ACK(result) ────┘
-    Im lang ack_timeout_s -> gui lai (tang `confirmation`); `retries` lan gui lien tiep KHONG nghe
-    gi -> timeout. Bat ky ACK nao (ke ca IN_PROGRESS) dem lai tu dau.
-    Dang IN_PROGRESS ma im lang -> VAN gui lai (hoi trang thai): dich thay confirmation > 0 thi
-    khong chay lai -- tra IN_PROGRESS, hoac ket qua cu neu vua xong (ACK ket qua bi rot tren radio).
-    Mat vai goi IN_PROGRESS lien tiep tren radio khong con bi bao nham "not responding".
+    Khong ACK sau ack_timeout_s -> gui lai (tang `confirmation`); `retries` lan khong ACK lien tiep
+    -> timeout. Moi ACK (ke ca IN_PROGRESS) reset bo dem.
+    IN_PROGRESS roi im lang -> van gui lai de hoi trang thai; dich thay confirmation > 0 khong chay lai
+    lenh, tra IN_PROGRESS hoac ket qua cuoi (khi ACK ket qua bi mat tren radio).
 
 Lenh nhieu buoc (vd gui thang PX4: ARM -> NAV_TAKEOFF): buoc sau chi gui khi buoc truoc ACCEPTED;
 mot buoc bi tu choi / het han -> ca lenh dung o do.
 
-Moi luc chi 1 lenh dang cho (bam Take-off roi Land ngay -> lenh sau thay lenh truoc).
-Retry chay trong tick() cua UI ticker nen khong can thread rieng.
+Toi da 1 lenh dang cho; lenh moi thay lenh cu. Retry chay trong tick() (main thread).
 """
 
 import time
@@ -104,13 +102,13 @@ class CommandSender(FactGroup):
         if m.get_srcSystem() != t.system or m.get_srcComponent() != t.component:
             return
         state = RESULT_TEXT.get(m.result, 'failed')
-        p['silent'] = 0                 # dich con song: dem lai so lan im lang
-        if state == 'in_progress':      # dich dang thuc hien: cho them
+        p['silent'] = 0                 # reset bo dem im lang
+        if state == 'in_progress':
             p['sent_at'] = time.monotonic()
             self.set(state='in_progress', attempt=0)
             return
         if state == 'accepted' and p['i'] + 1 < len(p['steps']):
-            p['i'] += 1                 # buoc tiep theo (vd ARM xong -> NAV_TAKEOFF)
+            p['i'] += 1                 # buoc tiep (ARM -> NAV_TAKEOFF)
             p['tx'] = 0
             self.set(state='sending', step=p['i'] + 1)
             self._transmit(time.monotonic())
@@ -124,4 +122,4 @@ class CommandSender(FactGroup):
         if p['silent'] >= p['target'].retries:
             self._finish('timeout')
         else:
-            self._transmit(now)         # gui lai / hoi trang thai (ca khi dang IN_PROGRESS)
+            self._transmit(now)         # gui lai / hoi trang thai

@@ -41,7 +41,7 @@ OFFLINE_ERRNOS = (errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN)
 
 
 def is_offline_error(err):
-    """True neu loi cho thay KHONG ra duoc mang (khong phai loi rieng cua 1 o)."""
+    """True neu loi la mat mang (khong phai loi cua rieng 1 o)."""
     reason = err.reason if isinstance(err, urllib.error.URLError) else err
     if isinstance(reason, (TimeoutError, socket.timeout)):
         return False

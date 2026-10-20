@@ -33,7 +33,7 @@ class CommandAdapter(GroupAdapter):
         self.commander = FlightCommander({'px4': direct_sender, 'jetson': sender}, vehicle,
                                          self.target, environment)
         self._gates = {}
-        # do cao cat canh mac dinh theo moi truong (khop MIS_TAKEOFF_ALT trong config/px4/*.params)
+        # do cao cat canh mac dinh theo moi truong (= MIS_TAKEOFF_ALT trong config/px4/*.params)
         self._takeoff = {'indoor': float(cfg.get('takeoff_altitude_indoor', 1.5)),
                          'outdoor': float(cfg.get('takeoff_altitude_outdoor', 5.0))}
         self.flush()
@@ -59,7 +59,12 @@ class CommandAdapter(GroupAdapter):
     def rtl(self):
         self._do('jetson', 'rtl')
 
-    # --- nut 🧪 Test: kiem tra duong Jetson trong phong thi nghiem ---------------------------
+    @Slot()
+    def startMission(self):
+        """Bay cac waypoint da Send WP (Jetson mission_manager, tu HOVER)."""
+        self._do('jetson', 'mission')
+
+    # --- bang Test: gui qua Jetson, bo qua dieu kien phia GCS -----------------------------------
     @Slot()
     def ping(self):
         self.commander.ping()
@@ -79,13 +84,13 @@ class CommandAdapter(GroupAdapter):
     def testUploadMission(self):
         """Gui waypoint bo qua dieu kien GPS (Jetson chi luu, khong bay)."""
         if self.mission.items:
-            self.uploader.upload(self.target, [dict(w) for w in self.mission.items])
+            self.uploader.upload(self.commander._jetson(), [dict(w) for w in self.mission.items])
             self.upload.flush()
 
     @Slot()
     def uploadMission(self):
         if self.mission.items and not self.commander.blocker('jetson', 'upload'):
-            self.uploader.upload(self.target, [dict(w) for w in self.mission.items])
+            self.uploader.upload(self.commander._jetson(), [dict(w) for w in self.mission.items])
             self.upload.flush()
 
     @Slot()
@@ -111,6 +116,7 @@ class CommandAdapter(GroupAdapter):
         self.direct.flush()
         gates = self.commander.gates()
         gates['owner'] = self.commander.lock.owner or ''
+        gates['jetsonLink'] = self.commander.vehicle.companion_link     # 433 / SITL UDP
         if gates != self._gates:
             self._gates = gates
             self.gatesChanged.emit()
@@ -118,5 +124,5 @@ class CommandAdapter(GroupAdapter):
     missionUpload = Property(QObject, lambda self: self.upload, constant=True)
     directCommand = Property(QObject, lambda self: self.direct, constant=True)
     takeoffAltitudes = Property('QVariantMap', lambda self: self._takeoff, constant=True)
-    targetLink = Property(str, lambda self: self.target.link, constant=True)
+    targetLink = Property(str, lambda self: self.commander.vehicle.companion_link, notify=gatesChanged)
     gates = Property('QVariantMap', lambda self: self._gates, notify=gatesChanged)

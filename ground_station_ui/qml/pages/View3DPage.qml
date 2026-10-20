@@ -5,10 +5,11 @@ import QtQuick3D
 import QtQuick3D.Helpers
 import DroneGcs3D
 import "../components"
+import "../models/eiu_drone"
 
-// Khung nhin 3D cuc bo (thay RViz): luoi san, truc map, drone + base_link, vet bay.
-// Pose: Jetson doc PX4 /fmu/out/vehicle_odometry (DDS) -> DRONE_LOCAL_POSE qua radio 433.
-// Du lieu app la ENU (met); doi sang scene Qt Quick 3D (Y len) chi o scenePos / sceneRot.
+// Khung nhin 3D cuc bo: luoi san, truc map, drone (base_link), vet bay.
+// Pose: vehicle.localPose (Jetson DRONE_LOCAL_POSE, du phong PX4 LOCAL_POSITION_NED).
+// Du lieu ENU (m); doi sang scene (Y len) chi o scenePos / sceneRot.
 Item {
     id: page
     readonly property var pose: vehicle.localPose.values
@@ -30,6 +31,7 @@ Item {
         View3D {
             id: view
             anchors.fill: parent
+            camera: camera
             environment: SceneEnvironment {
                 clearColor: "#0b0f14"
                 backgroundMode: SceneEnvironment.Color
@@ -39,8 +41,8 @@ Item {
 
             DirectionalLight { eulerRotation.x: -45; eulerRotation.y: 30; brightness: 1.2 }
 
-            // ---- camera quy dao: keo chuot trai xoay, cuon = zoom, keo chuot phai di chuyen ----
-            // target bam theo drone; orbit (con) do OrbitCameraController xoay / keo
+            // ---- camera orbit: keo trai = xoay, cuon = zoom, keo phai = pan ----
+            // target bam drone; node orbit con do OrbitCameraController dieu khien
             Node {
                 id: target
                 position: page.follow && page.hasPose ? drone.position : Qt.vector3d(0, 0, 0)
@@ -61,43 +63,26 @@ Item {
 
             // ---- vet bay ----
             Model {
-                visible: (vehicle.localPose.items || []).length > 1
-                geometry: Polyline { points: vehicle.localPose.items }
-                materials: PrincipledMaterial { baseColor: "#ffcc00"; lighting: PrincipledMaterial.NoLighting }
+                visible: vehicle.localPose.values.trailPoints > 1
+                geometry: Polyline { source: vehicle.trail3d; widthM: 0.05 }   // rong 5 cm, cap nhat tang dan
+                materials: PrincipledMaterial {
+                    baseColor: "#2f9bff"; lighting: PrincipledMaterial.NoLighting
+                    cullMode: PrincipledMaterial.NoCulling
+                }
             }
 
-            // ---- drone (base_link): than + 4 tay + mui do + truc FLU ----
+            // ---- drone (base_link): mo hinh + truc FLU ----
             Node {
                 id: drone
                 visible: page.hasPose
                 position: page.scenePos(page.pose.e || 0, page.pose.n || 0, page.pose.u || 0)
                 rotation: page.sceneRot(page.pose.q || [1, 0, 0, 0])
-                // pose ~5 Hz qua radio -> noi suy cho muot
+                // pose ~5 Hz -> noi suy
                 Behavior on position { Vector3dAnimation { duration: 200 } }
 
-                Model {
-                    source: "#Cube"; scale: Qt.vector3d(0.16, 0.05, 0.16)
-                    materials: PrincipledMaterial { baseColor: "#8b949e"; roughness: 0.6 }
-                }
-                Repeater3D {
-                    model: [45, 135, 225, 315]
-                    delegate: Node {
-                        required property var modelData
-                        eulerRotation.y: modelData
-                        Model {   // tay
-                            source: "#Cube"; x: 18; scale: Qt.vector3d(0.36, 0.02, 0.03)
-                            materials: PrincipledMaterial { baseColor: "#57606a" }
-                        }
-                        Model {   // vong canh quat
-                            source: "#Cylinder"; x: 36; y: 3; scale: Qt.vector3d(0.24, 0.01, 0.24)
-                            materials: PrincipledMaterial { baseColor: "#30363d"; opacity: 0.85 }
-                        }
-                    }
-                }
-                Model {   // mui (huong bay) mau do
-                    source: "#Cone"; x: 16; eulerRotation.z: -90; scale: Qt.vector3d(0.06, 0.1, 0.06)
-                    materials: PrincipledMaterial { baseColor: "#ff453a" }
-                }
+                // EiuDrone: tools/drone_model/build.sh (Blender -> glTF -> balsam).
+                // Khung base_link (FLU, goc = PX4, mui = +X), don vi m -> scale 100.
+                EiuDrone { scale: Qt.vector3d(100, 100, 100) }
                 Axes3D { length: 60; thickness: 2 }
             }
         }
@@ -114,7 +99,10 @@ Item {
                 anchors.fill: parent; anchors.margins: 12
                 spacing: 6
                 Text {
-                    text: page.hasPose ? "● Pose  ·  Jetson → radio 433" : "● No pose yet (Jetson / PX4 DDS?)"
+                    // nguon pose: jetson | px4
+                    text: !page.hasPose ? "● No pose yet (Jetson / PX4 link?)"
+                        : page.pose.source === "jetson" ? "● Pose  ·  Jetson (DDS) → radio 433"
+                        : "● Pose  ·  PX4 direct (" + (vehicle.status.values.source || "MAVLink") + ")"
                     color: page.hasPose ? Theme.ok : Theme.warn; font.pixelSize: 12; font.bold: true
                 }
                 component Block: ColumnLayout {
@@ -156,7 +144,7 @@ Item {
                     values: page.hasPose ? [page.pose.ve.toFixed(2), page.pose.vn.toFixed(2), page.pose.vu.toFixed(2)] : []
                 }
                 Text {
-                    text: "Trail: " + (vehicle.localPose.items || []).length + " points"
+                    text: "Trail: " + vehicle.localPose.values.trailPoints + " points"
                     color: Theme.textDim; font.pixelSize: 12
                 }
                 Text {

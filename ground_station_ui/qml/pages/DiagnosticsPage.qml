@@ -14,7 +14,7 @@ ScrollView {
     readonly property var fl: vehicle.flight.values
     readonly property var comp: vehicle.companion.values
     readonly property var px4Link: links.values.px4 || ({})
-    readonly property var jetLink: links.values.jetson || ({})
+    readonly property var jetLink: links.values[commands.gates.jetsonLink || "jetson"] || ({})   // 433 / SITL
 
     // The trang thai gian deu het hang: so cot theo do rong (the toi thieu cardMin), chia deu phan du.
     readonly property int cardMin: 200

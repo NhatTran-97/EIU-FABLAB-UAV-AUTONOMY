@@ -33,8 +33,8 @@ class EnvironmentAdapter(QObject):
         profile = self.params.values['profile']
         effective, source = resolve_environment(self._mode, profile, fix)
         mismatch = ''
-        # Chi canh bao khi NGUY HIEM: PX4 tat GPS / do cao theo range (cau hinh trong nha MTF-02) ma
-        # dang bay ngoai troi. PX4 cau hinh GPS + baro (outdoor / no_mtf02) dung trong nha van an toan.
+        # Chi canh bao: PX4 cau hinh trong nha (GPS tat / do cao range MTF-02) + moi truong ngoai troi.
+        # Cau hinh GPS + baro dung trong nha khong nguy hiem -> khong canh bao.
         if profile == 'indoor' and effective == 'outdoor':
             mismatch = ("PX4 is using the indoor (optical-flow, GPS off) config but the app is in outdoor "
                         "mode — load config/px4/outdoor.params in QGC or change Flight environment in Settings")
@@ -45,7 +45,7 @@ class EnvironmentAdapter(QObject):
 
     def flush(self, force=False):
         state = self._compute()
-        # do cao hien thi: da biet moi truong (tay / PX4) -> ep theo do; chua biet -> FlightGroup tu theo GPS
+        # nguon do cao: theo moi truong neu da biet; chua biet -> FlightGroup chon theo GPS fix
         self.flight.set_mode(state['effective'] if state['source'] != 'gps' else 'auto')
         if force or state != self._state:
             self._state = state

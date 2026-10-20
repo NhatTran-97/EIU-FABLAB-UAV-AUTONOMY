@@ -1,11 +1,11 @@
 import QtQuick
 
-// Dong ho tu the (chan troi nhan tao): roll xoay chan troi, pitch day len / xuong.
-// Du lieu: vehicle.attitude (ATTITUDE cua PX4). Animation ngan cho muot khi telemetry ~5 Hz.
+// Chan troi nhan tao: roll xoay, pitch tinh tien. Nguon: vehicle.attitude.
+// Animation ngan de noi suy giua cac mau ~5 Hz.
 Item {
     id: root
     property real roll: 0          // do, duong = nghieng phai
-    property real pitch: 0         // do, duong = chui mui len
+    property real pitch: 0         // do, duong = mui len
     property bool valid: false
     property real pxPerDeg: canvas.width / 70     // ~ +/-35 do thay duoc
 

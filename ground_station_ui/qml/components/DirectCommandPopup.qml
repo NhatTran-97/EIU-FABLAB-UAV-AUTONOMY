@@ -2,9 +2,8 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 
-// Popup tu o PX4 (TopBar): Take-off / Land GUI THANG PX4 qua radio 915 (MAVLink, khong qua Jetson).
-// Khoa theo commands.gates.px4 (mat 915, khoa cheo khi duong Jetson dang giu quyen) + trang thai bay.
-// Phai GIU nut 1 giay de xac nhan.
+// Popup tu o PX4 (TopBar): Take-off / Land thang PX4 qua radio 915 (khong qua Jetson).
+// Khoa theo commands.gates.px4 (link 915, khoa cheo, trang thai bay). Xac nhan: giu nut 1 s.
 Popup {
     id: pop
     width: 400

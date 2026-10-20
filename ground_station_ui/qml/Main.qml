@@ -50,7 +50,7 @@ ApplicationWindow {
                 objectName: "nav"
                 Layout.fillHeight: true
                 items: features
-                // Mo app luon vao Map (trang van hanh chinh); ket noi xem o thanh tren cung / Connections
+                // trang mac dinh: Map
                 Component.onCompleted: currentIndex = win.featureIndex("map")
             }
 
@@ -73,6 +73,6 @@ ApplicationWindow {
         }
     }
 
-    // Man hinh khoi dong (nhan dien EIU), tu an sau ~7 s (bam de bo qua)
+    // splash ~7 s, click de bo qua
     Splash {}
 }

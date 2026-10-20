@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 
-// Khung dong ho goc tren phai ban do (giong QGC): tu the + la ban + do cao / toc do.
+// Cum dong ho goc tren phai ban do: tu the, la ban, do cao, toc do.
 Rectangle {
     id: panel
     readonly property var att: vehicle.attitude.values
@@ -38,7 +38,7 @@ Rectangle {
             }
         }
 
-        // so lieu: do cao lon nhat (quan trong nhat khi bay trong nha), toc do nho hon
+        // do cao (chu lon), toc do
         GridLayout {
             Layout.fillWidth: true
             columns: 3

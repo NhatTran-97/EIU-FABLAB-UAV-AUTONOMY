@@ -71,7 +71,7 @@ Rectangle {
         GridLayout {
             Layout.fillWidth: true
             columns: 2; columnSpacing: 16; rowSpacing: 4
-            opacity: card.stale ? 0.45 : 1          // so cu: mo di, khong gia vo la live
+            opacity: card.stale ? 0.45 : 1          // stale: lam mo
             Repeater {
                 model: card.rows.length * 2
                 delegate: Text {

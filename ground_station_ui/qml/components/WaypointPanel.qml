@@ -56,7 +56,7 @@ Rectangle {
             Layout.fillHeight: true
             clip: true
             spacing: 6
-            // model = SO LUONG: sua do cao khong lam tao lai dong dang go
+            // model = so luong: sua do cao khong tao lai delegate dang go
             model: mission.items.length
             delegate: Rectangle {
                 id: row

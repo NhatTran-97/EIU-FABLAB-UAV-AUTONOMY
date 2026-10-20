@@ -53,14 +53,14 @@ class Announcer:
             if pct is not None and pct >= 0:
                 step = next((x for x in sorted(BATTERY_STEPS) if pct <= x), None)   # muc thap nhat da cham
                 if self._bat_step is None:
-                    # lan dau thay pin: chi bao neu dang bay va da thap
+                    # mau dau tien: chi bao khi dang bay va da duoi nguong
                     if step is not None and self._armed:
                         out.append(self._say('battery', pct=int(pct)))
                     self._bat_step = step if step is not None else 101
                 elif step is not None and step < self._bat_step:
                     out.append(self._say('battery', pct=int(pct)))
                     self._bat_step = step
-                elif pct > self._bat_step + 5:          # thay pin moi (tre 5 % chong nhieu)
+                elif pct > self._bat_step + 5:          # thay pin (hysteresis 5 %)
                     self._bat_step = step if step is not None else 101
 
         jetson = bool(comp.get('linkAlive'))

@@ -12,7 +12,7 @@ class MissionAdapter(GroupAdapter):
         super().__init__(mission, parent)
         self.mission = mission
 
-    # Thao tac cua nguoi dung -> cap nhat ngay (khong doi tick) cho cam giac muot
+    # thao tac UI -> flush ngay, khong doi tick
     def _done(self):
         self.flush()
 

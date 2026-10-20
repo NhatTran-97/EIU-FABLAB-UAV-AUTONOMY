@@ -230,7 +230,7 @@ ColumnLayout {
         }
     }
 
-    // ===================== ABOUT (hang rieng, full ngang) =====================
+    // ===================== ABOUT (hang rieng) =====================
     Text { text: "About"; color: Theme.text; font.pixelSize: 15; font.bold: true; Layout.topMargin: 6 }
     Rectangle {
         Layout.fillWidth: true
@@ -268,7 +268,7 @@ ColumnLayout {
                     color: Theme.textDim; font.pixelSize: 12
                 }
             }
-            Rectangle {                      // anh campus giu nguyen ti le (co san ten truong trong anh)
+            Rectangle {                      // anh campus, giu ti le
                 visible: aboutRow.width >= 560   // the qua hep -> an anh, giu chu
                 Layout.preferredWidth: 300; Layout.preferredHeight: 167
                 radius: 8; clip: true; color: "transparent"

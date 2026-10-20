@@ -1,12 +1,14 @@
 import QtCore
 import QtQuick
+import QtQuick3D
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 import QtLocation
 import QtPositioning
 import "../components"
+import "../models/eiu_drone"
 
-// Ban do OFFLINE (QtLocation + tile server cuc bo co cache .mbtiles) + soan waypoint.
+// Ban do offline (QtLocation + tile server localhost, cache .mbtiles) + soan waypoint.
 Item {
     id: page
 
@@ -18,6 +20,7 @@ Item {
     property bool addMode: false
     readonly property bool indoor: flightEnv.state.effective === "indoor"
     property bool showWaypoints: false      // panel waypoint an / hien (nho qua Settings)
+    property bool showTrack: true          // vet bay GPS (nut 〰; nhan giu = xoa)
     Settings { category: "mapPage"; property alias showWaypoints: page.showWaypoints }
     property int selected: -1
     property var pin: null              // vi tri vua nhap toa do (ghim tam)
@@ -97,7 +100,7 @@ Item {
                 id: mapLoader
                 anchors.fill: parent
                 sourceComponent: mapComponent
-                // Doi lop -> nap lai Map voi Plugin moi (plugin cua Map khong doi duoc sau khi tao)
+                // doi lop -> tao lai Map (Map.plugin chi gan duoc luc tao)
                 property string layerKey: page.layerId
                 onLayerKeyChanged: { active = false; active = true }
             }
@@ -110,7 +113,7 @@ Item {
                 spacing: 8
                 z: 26
 
-                // mat telemetry PX4 sau khi da tung ket noi: so lieu tren man hinh la so cu
+                // mat telemetry PX4 sau khi da ket noi: so lieu dang hien la gia tri cu
                 Rectangle {
                     objectName: "px4LostBanner"
                     readonly property var st: vehicle.status.values
@@ -184,6 +187,12 @@ Item {
                         Text { anchors.centerIn: parent; text: mission.values.count; color: "white"; font.pixelSize: 11; font.bold: true }
                     }
                 }
+                // dat lai bearing = 0, tilt = 0
+                ToolBtn {
+                    visible: page.map !== null && (Math.abs(page.map.bearing) > 0.5 || page.map.tilt > 0.5)
+                    label: "⟲N"; tip: "Reset rotation / tilt (right-drag to rotate & tilt)"
+                    onClicked: { page.map.bearing = 0; page.map.tilt = 0 }
+                }
                 ToolBtn { label: "+"; tip: "Zoom in"; onClicked: if (page.map) page.map.zoomLevel += 1 }
                 ToolBtn { label: "−"; tip: "Zoom out"; onClicked: if (page.map) page.map.zoomLevel -= 1 }
                 ToolBtn {
@@ -191,6 +200,26 @@ Item {
                     onClicked: if (page.map && page.hasDrone) page.map.center = QtPositioning.coordinate(gps.lat, gps.lon)
                 }
                 ToolBtn { label: "⬇"; tip: "Download offline map"; checked: prefetchPanel.visible; onClicked: prefetchPanel.visible = !prefetchPanel.visible }
+                // vet bay: click = bat / tat; giu = xoa vet hien thi (GPX khong doi)
+                ToolBtn {
+                    readonly property var tr: vehicle.track.values
+                    label: "〰"
+                    tip: "Flight track: " + (tr.lengthM || 0).toFixed(0) + " m"
+                         + (tr.recording ? " · recording" : "")
+                         + (tr.lastFile ? "\nSaved: " + tr.lastFile : "") + "\n(long-press: clear)"
+                    checked: page.showTrack
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: page.showTrack = !page.showTrack
+                        onPressAndHold: vehicle.clearTrack()
+                    }
+                    Rectangle {                            // cham do: dang ghi (armed)
+                        visible: parent.tr.recording === true
+                        anchors.top: parent.top; anchors.right: parent.right
+                        width: 12; height: 12; radius: 6; color: Theme.error
+                        border.color: "white"; border.width: 1.5
+                    }
+                }
                 // vung cam / han che bay: bat-tat; nhan giu = nap lai file
                 ToolBtn {
                     label: "⛔"; tip: "No-fly zones (long-press: reload)"
@@ -406,14 +435,13 @@ Item {
 
             plugin: Plugin {
                 name: "osm"
-                // Moi o lay tu tile server cuc bo (cache .mbtiles) -> chay duoc khi mat mang
+                // o ban do tu tile server localhost (cache .mbtiles)
                 PluginParameter {
                     name: "osm.mapping.custom.host"
                     value: "http://127.0.0.1:" + mapService.port + "/" + page.layerId + "/%z/%x/%y.png"
                 }
                 PluginParameter { name: "osm.mapping.providersrepository.disabled"; value: true }
-                // Cache cua QtLocation tach rieng tung lop (khong lan anh giua cac lop);
-                // cache chinh la file .mbtiles nen cache dia cua QtLocation de nho
+                // cache dia QtLocation: rieng tung lop, dung luong nho (cache chinh la .mbtiles)
                 PluginParameter { name: "osm.mapping.cache.directory"; value: mapService.qtCacheDir + "/" + page.layerId }
                 PluginParameter { name: "osm.mapping.cache.disk.size"; value: 20000000 }
                 PluginParameter { name: "osm.mapping.highdpi_tiles"; value: false }
@@ -422,12 +450,22 @@ Item {
             Component.onCompleted: {
                 for (var i = 0; i < supportedMapTypes.length; i++)
                     if (supportedMapTypes[i].style === MapType.CustomMap) activeMapType = supportedMapTypes[i]
+                rebuildTrack()                       // vet da co truoc khi tao Map (vd doi lop)
             }
 
-            // ---- dieu khien: keo de di chuyen, cuon / pinch de zoom ----
+            // ---- dieu khien: keo trai = pan, cuon / pinch = zoom,
+            //      keo phai: dx -> bearing, dy -> tilt (nut ⟲N dat lai) ----
             DragHandler {
                 target: null
                 onTranslationChanged: (delta) => map.pan(-delta.x, -delta.y)
+            }
+            DragHandler {
+                target: null
+                acceptedButtons: Qt.RightButton           // tap phai (xoa waypoint) do TapHandler rieng
+                onTranslationChanged: (delta) => {
+                    map.bearing = (map.bearing + delta.x * 0.4 + 360) % 360
+                    map.tilt = Math.max(map.minimumTilt, Math.min(map.maximumTilt, map.tilt - delta.y * 0.3))
+                }
             }
             WheelHandler {
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
@@ -494,7 +532,7 @@ Item {
                 }
             }
 
-            // ---- waypoint: model = SO LUONG de delegate khong bi tao lai khi keo ----
+            // ---- waypoint: model = so luong -> delegate khong bi tao lai khi keo ----
             MapItemView {
                 model: mission.items.length
                 delegate: MapQuickItem {
@@ -559,24 +597,168 @@ Item {
                 }
             }
 
-            // ---- Drone (mui ten theo heading) ----
+            // ---- vet bay GPS: 1 MapPolyline / doan (1 doan = 1 lan arm).
+            //      vehicle.trackPath: appended -> addCoordinate; reset -> rebuildTrack() ----
+            property var trackLines: []
+            Component {
+                id: trackLineComp
+                MapPolyline { z: 15; line.width: 3; line.color: "#2f9bff"; visible: page.showTrack }
+            }
+            function trackLine(i) {
+                while (trackLines.length <= i) {
+                    var l = trackLineComp.createObject(map)
+                    map.addMapItem(l)
+                    trackLines.push(l)
+                }
+                return trackLines[i]
+            }
+            function rebuildTrack() {
+                for (var i = 0; i < trackLines.length; i++) { map.removeMapItem(trackLines[i]); trackLines[i].destroy() }
+                trackLines = []
+                var segs = vehicle.trackPath.paths()
+                for (var s = 0; s < segs.length; s++) {
+                    var path = []
+                    for (var k = 0; k < segs[s].length; k++)
+                        path.push(QtPositioning.coordinate(segs[s][k][0], segs[s][k][1]))
+                    trackLine(s).path = path
+                }
+            }
+            Connections {
+                target: vehicle.trackPath
+                function onReset() { map.rebuildTrack() }
+                function onAppended(points) {
+                    for (var i = 0; i < points.length; i++)
+                        map.trackLine(points[i][0]).addCoordinate(QtPositioning.coordinate(points[i][1], points[i][2]))
+                }
+            }
+
+            // ---- drone ----
+            //  coordinate = vi tri GPS (bong tren mat dat).
+            //  tilt <= 5 do : anh drone_top.png, rotation = heading - bearing.
+            //  tilt  > 5 do : EiuDrone (View3D), camera cung goc tilt / bearing voi ban do; roll / pitch tu attitude.
+            //  lift (px) = altRel / mpp * sin(tilt): drone ve cao hon bong, noi bang cot do cao.
+            //  kich thuoc: ti le theo ban do = kich thuoc that (spanM) / mpp x exaggeration, gioi han [minPx, maxPx].
             MapQuickItem {
+                id: droneMarker
                 visible: page.hasDrone
                 coordinate: QtPositioning.coordinate(page.gps.lat || 0, page.gps.lon || 0)
-                anchorPoint.x: 18; anchorPoint.y: 18
+                // noi suy vi tri giua cac mau (UI 5 Hz, Jetson 2 Hz); tat cho den khi co vi tri dau tien
+                // (tranh animate tu (0, 0))
+                property bool smoothReady: false
+                Timer { running: page.hasDrone; interval: 500; onTriggered: droneMarker.smoothReady = true }
+                Connections { target: page; function onHasDroneChanged() { if (!page.hasDrone) droneMarker.smoothReady = false } }
+                Behavior on coordinate {
+                    enabled: droneMarker.smoothReady
+                    CoordinateAnimation { duration: 250 }
+                }
+                anchorPoint.x: droneIcon.width / 2; anchorPoint.y: droneIcon.height - droneIcon.box / 2
                 z: 20
-                sourceItem: Canvas {
-                    width: 36; height: 36
+                sourceItem: Item {
+                    id: droneIcon
+                    readonly property real spanM: 0.9                   // be ngang khung drone_top.png (m)
+                    readonly property real exaggeration: 12
+                    readonly property real minPx: 24
+                    readonly property real maxPx: 240
+                    // box: khung ve; drone (anh 2D) chiem 0.75 box
+                    readonly property real box: Math.max(minPx, Math.min(maxPx, spanM / mpp * exaggeration / 0.75))
                     readonly property var att: vehicle.attitude.values
-                    rotation: (att.valid ? att.heading : (page.fl.heading || 0)) - map.bearing
-                    onPaint: {
-                        var ctx = getContext("2d")
-                        ctx.reset()
-                        ctx.beginPath()
-                        ctx.moveTo(18, 2); ctx.lineTo(32, 32); ctx.lineTo(18, 24); ctx.lineTo(4, 32)
-                        ctx.closePath()
-                        ctx.fillStyle = "#2ea043"; ctx.fill()
-                        ctx.lineWidth = 2; ctx.strokeStyle = "white"; ctx.stroke()
+                    readonly property real heading: att.valid ? att.heading : (page.fl.heading || 0)
+                    readonly property real alt: Math.max(0, page.fl.altRel || 0)
+                    // m/px (Web Mercator, o 256 px) tai vi do drone
+                    readonly property real mpp: 156543.03392 * Math.cos((page.gps.lat || 0) * Math.PI / 180)
+                                               / Math.pow(2, map.zoomLevel)
+                    readonly property real lift: Math.min(600, alt / mpp * Math.sin(map.tilt * Math.PI / 180))
+                    readonly property bool view3d: map.tilt > 5
+                    width: box; height: box + lift
+
+                    // bong (diem GPS) + cot do cao
+                    Rectangle {
+                        visible: droneIcon.lift > 3
+                        width: droneIcon.box * 0.35; height: width * Math.max(0.25, Math.cos(map.tilt * Math.PI / 180)); radius: width / 2
+                        x: (droneIcon.width - width) / 2; y: droneIcon.height - droneIcon.box / 2 - height / 2
+                        color: "#73000000"
+                    }
+                    Rectangle {
+                        visible: droneIcon.lift > 3
+                        width: 4; height: droneIcon.lift
+                        x: (droneIcon.width - width) / 2; y: droneIcon.box / 2
+                        color: "#2ea043"
+                    }
+
+                    // nhan do cao
+                    Rectangle {
+                        visible: droneIcon.lift > 3 && droneIcon.alt >= 0.3
+                        x: droneIcon.box - 14; y: droneIcon.box / 2 - height / 2
+                        width: altText.implicitWidth + 10; height: 18; radius: 4
+                        color: "#cc161b22"; border.color: "#2f9bff"
+                        Text {
+                            id: altText
+                            anchors.centerIn: parent
+                            text: droneIcon.alt.toFixed(1) + " m"
+                            color: "white"; font.pixelSize: 11; font.bold: true
+                        }
+                    }
+
+                    // --- tilt <= 5: anh 2D ---
+                    Item {
+                        visible: !droneIcon.view3d
+                        width: droneIcon.box * 0.75; height: width
+                        x: (droneIcon.box - width) / 2; y: (droneIcon.box - height) / 2
+                        transformOrigin: Item.Center
+                        rotation: droneIcon.heading - map.bearing
+                        Image {                              // halo ve san trong PNG (add_halo.py)
+                            anchors.fill: parent
+                            source: appInfo.imagesUrl + "drone_top.png"
+                            smooth: true; mipmap: true
+                        }
+                        Canvas {                             // chevron huong mui
+                            width: 18; height: 12
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            y: -10
+                            onPaint: {
+                                var ctx = getContext("2d")
+                                ctx.reset()
+                                ctx.beginPath()
+                                ctx.moveTo(9, 0); ctx.lineTo(17, 11); ctx.lineTo(9, 7); ctx.lineTo(1, 11)
+                                ctx.closePath()
+                                ctx.fillStyle = "#2ea043"; ctx.fill()
+                                ctx.lineWidth = 1.5; ctx.strokeStyle = "white"; ctx.stroke()
+                            }
+                        }
+                    }
+
+                    // --- tilt > 5: mo hinh 3D ---
+                    View3D {
+                        visible: droneIcon.view3d
+                        width: droneIcon.box; height: droneIcon.box
+                        camera: iconCam
+                        environment: SceneEnvironment {
+                            backgroundMode: SceneEnvironment.Transparent
+                            antialiasingMode: SceneEnvironment.MSAA
+                            antialiasingQuality: SceneEnvironment.High
+                        }
+                        // camera: goc ngang (90 - tilt) do, nhin ve phia tren man hinh (= huong bearing)
+                        OrthographicCamera {
+                            id: iconCam
+                            readonly property real elev: 90 - map.tilt
+                            position: Qt.vector3d(0, 400 * Math.sin(elev * Math.PI / 180), 400 * Math.cos(elev * Math.PI / 180))
+                            eulerRotation.x: -elev
+                            horizontalMagnification: droneIcon.box / 95; verticalMagnification: droneIcon.box / 95
+                            clipNear: 1; clipFar: 2000
+                        }
+                        DirectionalLight { eulerRotation.x: -60; eulerRotation.y: 25; brightness: 1.4 }
+                        DirectionalLight { eulerRotation.x: -20; eulerRotation.y: 200; brightness: 0.5 }
+                        // scene: X = Dong, Y = len, -Z = Bac; yaw = heading - bearing
+                        Node {
+                            eulerRotation.y: 90 - (droneIcon.heading - map.bearing)
+                            Node {
+                                eulerRotation.z: droneIcon.att.valid ? droneIcon.att.pitch : 0    // pitch > 0: mui len
+                                Node {
+                                    eulerRotation.x: droneIcon.att.valid ? droneIcon.att.roll : 0  // roll > 0: canh phai xuong
+                                    EiuDrone { scale: Qt.vector3d(100, 100, 100) }
+                                }
+                            }
+                        }
                     }
                 }
             }

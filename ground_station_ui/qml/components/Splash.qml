@@ -1,8 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 
-// Man hinh khoi dong: anh campus EIU (da co san ten truong o giua anh) + lop phu xanh dam, ~7 s,
-// ten app dat o phan duoi de khong chong chu trong anh, roi mo dan; bam de bo qua.
+// Splash: anh campus EIU + lop phu, ten app o phan duoi; hien holdMs roi fade out; click de bo qua.
 Rectangle {
     id: splash
     anchors.fill: parent
@@ -17,7 +16,7 @@ Rectangle {
         smooth: true
     }
     Rectangle { anchors.fill: parent; color: "#0b1220"; opacity: 0.45 }       // dark navy overlay
-    Rectangle {                                                               // toi dan phan duoi cho chu
+    Rectangle {                                                               // gradient toi phan duoi (nen cho chu)
         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
         height: parent.height * 0.42
         gradient: Gradient {
@@ -59,7 +58,7 @@ Rectangle {
         }
     }
 
-    // mo dan; Timer thu 2 dam bao splash LUON tat ke ca khi animation khong chay het
+    // fade out; Timer thu 2 dam bao splash tat ke ca khi animation khong ket thuc
     Behavior on opacity { NumberAnimation { duration: 450 } }
     function close() { opacity = 0; hideTimer.start() }
     Timer { running: true; interval: splash.holdMs; onTriggered: splash.close() }

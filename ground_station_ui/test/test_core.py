@@ -253,3 +253,116 @@ def test_resolve_environment_follows_px4_config():
     # chua doc duoc tham so -> tam theo GPS fix
     assert resolve_environment('auto', 'unknown', 3) == ('outdoor', 'gps')
     assert resolve_environment('auto', 'unknown', None) == ('indoor', 'gps')
+
+
+def test_udp_port_in_use_is_reported_and_status_is_open():
+    """Cong UDP da bi chuong trinh khac (vd QGC) chiem -> bao loi ro; mo duoc -> trang thai 'Open' (khong ket 'Opening')."""
+    busy = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    busy.bind(('127.0.0.1', 0))
+    port = busy.getsockname()[1]
+    states = []
+    link = UdpLink('sitl', {'listen': f'127.0.0.1:{port}'}, lambda *a: None, lambda l: states.append(l.status))
+    link.start()
+    time.sleep(0.3)
+    assert 'Cannot open' in link.status and not link.is_open
+    link.stop()
+    busy.close()
+    link.start()
+    time.sleep(0.3)
+    assert link.is_open and link.status.startswith('Open udp')
+    link.stop()
+
+
+def test_udp_remote_receives_heartbeat_before_any_packet():
+    """Link SITL co `remote`: chua nghe thay ai van gui heartbeat GCS toi PX4 (de PX4 gui du lieu ve)."""
+    px4 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    px4.bind(('127.0.0.1', 0))
+    px4.settimeout(3.0)
+    rport = px4.getsockname()[1]
+    link = UdpLink('sitl', {'listen': '127.0.0.1:0', 'remote': f'127.0.0.1:{rport}'}, lambda *a: None, lambda l: None)
+    link.start()
+    try:
+        data, addr = px4.recvfrom(1024)
+        m = d.MAVLink(None).parse_buffer(data)[0]
+        assert m.get_type() == 'HEARTBEAT' and m.type == d.MAV_TYPE_GCS
+    finally:
+        link.stop()
+        px4.close()
+
+
+def test_track_records_only_when_armed_one_segment_per_flight_and_saves_gpx(tmp_path):
+    router = MessageRouter()
+    v = Vehicle(router, {'autopilot_links': ['px4'], 'track_dir': str(tmp_path)})
+    tr = v.groups['track']
+    pos = lambda lat, lon: roundtrip(PX4, PX4.global_position_int_encode(0, int(lat * 1e7), int(lon * 1e7), 12000, 5000, 0, 0, 0, 0))
+    lat0, lon0, d = 11.0529, 106.6661, 0.00002                 # ~2.2 m moi buoc
+    router.dispatch('px4', [px4_heartbeat(armed=False), pos(lat0, lon0), pos(lat0 + d, lon0)])
+    assert tr.path.count == 0 and not tr.values['recording']   # o dat: khong ghi
+    router.dispatch('px4', [px4_heartbeat(armed=True)] + [pos(lat0 + i * d, lon0) for i in range(5)])
+    router.dispatch('px4', [pos(lat0 + 4 * d + 0.000001, lon0)])   # < 0.5 m: bo qua
+    assert tr.values['recording'] and tr.values['points'] == 5 and len(tr.path.segments) == 1
+    assert 8.0 < tr.values['lengthM'] < 9.5
+    router.dispatch('px4', [px4_heartbeat(armed=False), pos(lat0, lon0)])
+    files = list(tmp_path.glob('track_*.gpx'))
+    assert len(files) == 1 and files[0].read_text().count('<trkpt') == 5 and tr.values['lastFile'] == str(files[0])
+    router.dispatch('px4', [px4_heartbeat(armed=True), pos(lat0, lon0 + d), pos(lat0, lon0 + 3 * d)])
+    assert len(tr.path.segments) == 2 and len(tr.path.segments[1]) == 2      # chuyen bay 2 = doan moi
+    tr.clear()
+    assert tr.path.count == 0 and tr.values['points'] == 0
+
+
+def test_pathlog_incremental_updates():
+    """UI chi nhan diem moi; reset khi xoa / cat bot / thua."""
+    from ground_station_ui.core.facts import PathLog
+    p = PathLog()
+    p.add((1, 1))
+    assert p.take() == ('reset', [[(1, 1)]])                   # lan dau: ve tu dau
+    p.add((2, 2)); p.start_segment(); p.add((3, 3))
+    assert p.take() == ('append', [(0, (2, 2)), (1, (3, 3))]) and p.take() is None
+    p.trim_front(2)
+    assert p.take() == ('reset', [[(3, 3)]]) and p.count == 1
+    for i in range(10):
+        p.add((i, i))
+    p.thin()
+    assert p.take()[0] == 'reset' and p.count < 11 and p.segments[0][-1] == (9, 9)
+
+
+def test_map_position_falls_back_to_jetson_when_no_px4_link(monkeypatch):
+    """Ban do: PX4 truc tiep (915 / SITL) uu tien; khong co / mat PX4 > 2 s -> GLOBAL_POSITION_INT tu Jetson."""
+    import ground_station_ui.core.vehicle.vehicle as vehmod
+    now = [100.0]
+    monkeypatch.setattr(vehmod.time, 'monotonic', lambda: now[0])
+    router = MessageRouter()
+    v = Vehicle(router, {'autopilot_links': ['px4'], 'companion_link': 'jetson'})
+    gps, fl = v.groups['gps'], v.groups['flight']
+    gp = lambda mav, lat, hdg=9000: roundtrip(mav, mav.global_position_int_encode(0, int(lat * 1e7), int(106.6661 * 1e7), 20000, 7000, 0, 0, 0, hdg))
+    router.dispatch('jetson', [gp(JETSON, 11.0001)])             # chi co Jetson
+    assert gps.values['lat'] == 11.0001 and fl.values['altHome'] == 7.0 and fl.values['heading'] == 90.0
+    router.dispatch('px4', [px4_heartbeat(), gp(PX4, 11.0002)])  # co PX4 truc tiep -> uu tien
+    router.dispatch('jetson', [gp(JETSON, 11.0009)])
+    assert gps.values['lat'] == 11.0002
+    now[0] = 103.0                                                # PX4 im > 2 s -> Jetson
+    router.dispatch('jetson', [gp(JETSON, 11.0003)])
+    assert gps.values['lat'] == 11.0003
+
+
+def test_attitude_heading_px4_then_jetson_and_stale(monkeypatch):
+    """Huong (la ban, icon ban do): PX4 ATTITUDE uu tien; mat PX4 -> quaternion Jetson; khong nguon -> invalid."""
+    import math as m_
+    import ground_station_ui.core.vehicle.groups as groups
+    now = [100.0]
+    monkeypatch.setattr(groups.time, 'monotonic', lambda: now[0])
+    router = MessageRouter()
+    v = Vehicle(router, {'autopilot_links': ['px4'], 'companion_link': 'jetson'})
+    att = v.groups['attitude']
+    router.dispatch('px4', [px4_heartbeat(), roundtrip(PX4, PX4.attitude_encode(0, 0.1, -0.05, m_.radians(90), 0, 0, 0))])
+    assert att.values['source'] == 'px4' and att.values['heading'] == 90.0 and att.values['roll'] == 5.7
+    h = m_.radians(225) / 2                                       # Jetson: yaw 225 do (Tay Nam)
+    pose = roundtrip(JETSON, JETSON.drone_local_pose_encode(0, 0, 0, -1, [m_.cos(h), 0, 0, m_.sin(h)], 0, 0, 0, 0))
+    router.dispatch('jetson', [pose])
+    assert att.values['heading'] == 90.0                          # PX4 con song -> bo qua Jetson
+    now[0] = 103.0
+    router.dispatch('jetson', [pose])
+    assert att.values['source'] == 'jetson' and att.values['heading'] == 225.0 and att.values['valid']
+    att.tick(106.0)
+    assert not att.values['valid']                                # khong nguon nao -> invalid

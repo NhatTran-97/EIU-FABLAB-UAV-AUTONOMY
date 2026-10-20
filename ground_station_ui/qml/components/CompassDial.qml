@@ -1,6 +1,6 @@
 import QtQuick
 
-// La ban: mat so xoay theo heading, mui drone luon chi len tren (giong QGC).
+// La ban: mat so xoay -heading, ky hieu drone co dinh chi len.
 Item {
     id: root
     property real heading: 0       // do, 0-360

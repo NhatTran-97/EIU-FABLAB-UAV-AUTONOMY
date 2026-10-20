@@ -6,7 +6,7 @@
 
 ui_rate_hz: 5            # tan so cap nhat giao dien
 
-# Ban do OFFLINE: o ban do luu trong file .mbtiles (SQLite). Co mang -> o chua co se duoc tai
+# Ban do offline: o luu trong .mbtiles (SQLite). Co mang -> o thieu duoc tai
 # va luu lai; mat mang -> dung cache. Tai truoc vung bay: tab Map -> "Tai vung offline".
 #   url:     nguon online ({z} {x} {y}); de trong = lop chi offline (vd anh drone tu chup)
 #   file:    ten file .mbtiles trong cache_dir (mac dinh <id>.mbtiles)
@@ -14,7 +14,7 @@ ui_rate_hz: 5            # tan so cap nhat giao dien
 #   Lop dau tien = lop mac dinh khi mo app
 # Luu y dieu khoan: cac nguon thuong mai (Esri, Google, Bing) han che tai hang loat.
 map:
-  cache_dir: data/maps                    # tuong doi = trong package (chep package la mang theo map)
+  cache_dir: data/maps                    # duong dan tuong doi = tinh tu goc package
   default_center: [10.8231, 106.6297]     # khi chua co vi tri drone
   default_zoom: 16
   search_default: [11.052950, 106.666145]   # dien san o nhap toa do (tab Map) -- khu bay EIU
@@ -25,14 +25,13 @@ map:
       title: Hybrid
       compose: [google_satellite, roads, places]
       attribution: Google, Esri, HERE, Garmin
-    # Anh Google (cung nguon QGC dung) -- nen cua Hybrid, net + moi hon Esri o khu bay.
-    # Dieu khoan Google khong cho lay o truc tiep nhu nay -- QGC van lam; tu can nhac.
+    # Anh Google: nen cua Hybrid. Dieu khoan Google khong cho phep truy cap o truc tiep.
     - id: google_satellite
       hidden: true            # chi lam nen cho Hybrid
       url: https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}
       max_zoom: 19            # QtLocation tu phong to khi zoom sau hon
       attribution: Google
-    # Azure Maps (anh Maxar nhu GUI cu) -- can key: export AZURE_MAPS_KEY=... (dat trong ~/.bashrc)
+    # Azure Maps (anh Maxar) -- can key: export AZURE_MAPS_KEY=...
     # Khong co key -> lop chi doc cache; cache cung trong -> lop bi an
     - id: azure
       title: Azure
@@ -65,7 +64,7 @@ map:
 
 # Vung cam / han che bay: chep file .geojson hoac OpenAir (.txt / .openair) vao thu muc duoi day
 # roi bam nut tai lai tren tab Map. Nguon: OpenAIP (vung P/R/D, CTR san bay tu AIP Viet Nam),
-# vung quan su ghi trong giay phep bay -> tu ve bang geojson.io. App chi CANH BAO, khong chan.
+# vung quan su theo giay phep bay -> ve bang geojson.io. App chi canh bao, khong chan lenh.
 airspace:
   dirs:
     - data/airspace                       # trong package
@@ -85,15 +84,18 @@ commands:
   takeoff_altitude_outdoor: 5      # m -- khop outdoor.params
 
 mission:
-  default_altitude: 20     # m, do cao mac dinh cua waypoint moi
+  # m, do cao mac dinh cua waypoint moi (so voi Home). Phai <= max_takeoff_altitude cua mission_manager
+  # (15 m, < GF_MAX_VER_DIST 20 m); vuot -> Start mission bi tu choi.
+  default_altitude: 10
 
 # Danh tinh drone (1 drone). Autopilot chi nhan tu cac link trong autopilot_links, thu tu =
-# uu tien: radio that (px4) dang chay thi bo qua SITL; px4 im lang > 5 s moi chuyen sang link sau.
+# uu tien: link dau con heartbeat thi bo qua link sau; im > 5 s -> chuyen link sau.
 # Du lieu Jetson (DRONE_*) chi nhan tu companion_link + compid 191 + cung sysid voi autopilot.
 vehicle:
   autopilot_links: [px4, sitl]
   # sysid: 1                 # co dinh sysid autopilot (mac dinh: theo heartbeat)
-  companion_link: jetson
+  # Jetson: radio 433 hoac UDP (SITL); lenh / waypoint gui qua link companion nhan heartbeat gan nhat
+  companion_links: [jetson, jetson_sitl]
   companion_compid: 191
 
 links:
@@ -112,6 +114,15 @@ links:
 
   - name: sitl
     title: PX4 SITL
-    hint: mô phỏng trên laptop (make px4_sitl ...)
+    hint: mô phỏng trên laptop (make px4_sitl ...) · MAVLink thẳng
     type: udp
     listen: 0.0.0.0:14550
+    remote: 127.0.0.1:18570     # cong GCS cua PX4 SITL; app gui heartbeat toi day de PX4 gui ve app
+
+  # SITL: drone_telemetry chay tren laptop, gui UDP toi day thay radio 433
+  # (telemetry.yaml / launch sim: port udp:127.0.0.1:14551)
+  - name: jetson_sitl
+    title: Jetson SITL
+    hint: drone_telemetry trên laptop (mô phỏng) · UDP
+    type: udp
+    listen: 0.0.0.0:14551

@@ -12,7 +12,7 @@ Rectangle {
     readonly property var bat: vehicle.battery.values
     readonly property var fl: vehicle.flight.values
     readonly property var px4Link: links.values.px4 || ({})
-    readonly property var jetLink: links.values.jetson || ({})
+    readonly property var jetLink: links.values[commands.gates.jetsonLink || "jetson"] || ({})   // 433 / SITL
     readonly property bool jetsonAlive: vehicle.companion.values.linkAlive
 
     component Item_: ColumnLayout {
@@ -33,8 +33,7 @@ Rectangle {
         spacing: bar.width < 1400 ? 14 : 28            // cua so hep -> sat lai (logo nam o dau menu)
 
 
-        // PX4: ket noi + CHE DO BAY (to) + ARMED / DISARMED (noi bat khi armed).
-        // Bam -> Take-off / Land GUI THANG PX4 qua radio 915 (3 nut duoi ban do di qua Jetson).
+        // PX4: link, che do bay, ARMED / DISARMED. Click -> DirectCommandPopup (lenh thang PX4, 915).
         Rectangle {
             id: px4Chip
             objectName: "px4Chip"
@@ -95,13 +94,13 @@ Rectangle {
         Item_ {
             label: "GPS"
             value: gps.fix + (gps.satellites > 0 ? " (" + gps.satellites + ")" : "")
-            // trong nha khong co GPS la binh thuong -> xam, khong bao do
+            // trong nha: khong GPS la binh thuong -> mau xam
             valueColor: gps.fixType >= 3 ? Theme.ok
                       : (flightEnv.state.effective === "indoor" ? Theme.textDim
                       : (gps.fixType === 2 ? Theme.warn : Theme.error))
         }
         Item_ {
-            // nguong 25 % canh bao, 15 % nguy cap (khop core/alerts/health.py) -- co bieu tuong, khong chi mau
+            // nguong 25 % warning, 15 % critical (= core/alerts/health.py)
             readonly property string lvl: bat.percent < 0 ? "" : (bat.percent <= 15 ? "crit" : (bat.percent <= 25 ? "warn" : ""))
             label: "Battery"
             value: (lvl === "crit" ? "⛔ " : lvl === "warn" ? "⚠ " : "")

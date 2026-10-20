@@ -1,23 +1,19 @@
-"""Lenh bay: 2 duong rieng + KHOA CHEO + dieu kien tung nut (Python thuan).
+"""Lenh bay: 2 duong, khoa cheo, dieu kien tung lenh.
 
-    px4    : o PX4 tren thanh tren cung -> Take-off / Land GUI THANG PX4 qua radio 915.
-             ACK do chinh PX4 tra. Take-off = [ARM neu chua arm] -> NAV_TAKEOFF.
-    jetson : 3 nut duoi ban do -> radio 433 -> Jetson (drone_telemetry) -> uXRCE-DDS -> PX4.
-             Send WP cung di duong nay.
+Duong:
+    px4    : radio 915 -> PX4. Take-off = [ARM neu chua arm] -> NAV_TAKEOFF; ACK tu PX4.
+    jetson : radio 433 -> drone_telemetry -> uXRCE-DDS -> PX4. Gom ca Send WP.
 
-Khoa cheo (CommandLock): duong nao da gui lenh bay (Take-off / Land / Hold / RTL) thi GIU QUYEN den
-khi drone ve dat + disarm; duong con lai bi chan. Ngoai le: duong giu quyen MAT KET NOI -> duong kia
-duoc dung (khong de drone khong ai dieu khien). Tay RC luon uu tien hon ca hai.
+Khoa cheo (CommandLock): duong gui lenh bay (Take-off / Land / Hold / RTL) giu quyen den khi ve dat +
+disarm; duong kia bi chan, tru khi duong giu quyen mat link. RC luon uu tien.
 
-Che do TEST (nut 🧪 canh 3 nut duoi, trong phong thi nghiem): ping Jetson (MAV_CMD_USER_1, Jetson tra
-ACK + STATUSTEXT, khong dung PX4) va gui Take-off / Land qua Jetson BO QUA dieu kien phia GCS (DDS, GPS,
-khoa cheo, trang thai bay) -- de kiem tra lenh co len toi Jetson khong. Jetson VAN ap luat an toan rieng
-(khong co PX4 -> tu choi 'no PX4 data'; co PX4 + o mat dat -> Take-off SE ARM).
+Che do test: ping Jetson (MAV_CMD_USER_1 -> ACK + STATUSTEXT, khong qua PX4); Take-off / Land qua Jetson
+bo qua dieu kien phia GCS (DDS, GPS, khoa cheo, trang thai bay). Jetson van tu kiem tra an toan.
 
-Dieu kien (blockers): duong con song; Jetson phai co du lieu PX4 qua DDS (lenh bay); bat dau viec moi
-(Take-off / Send WP qua Jetson) khi ngoai troi can GPS 3D fix, RTL luon can GPS; Land / Hold khong bao
-gio bi chan vi GPS. Trang thai bay (EXTENDED_SYS_STATE): Take-off khi dang bay / Land, Hold, RTL khi
-o mat dat -> chan; chua biet -> de PX4 / Jetson quyet.
+Dieu kien chan (blockers):
+  * link song; lenh bay qua Jetson can PX4 qua DDS;
+  * ngoai troi: Take-off / Send WP qua Jetson can GPS 3D fix; RTL luon can GPS; Land / Hold khong xet GPS;
+  * EXTENDED_SYS_STATE: chan Take-off khi dang bay, Land / Hold / RTL khi o mat dat; chua biet -> khong chan.
 """
 
 import math
@@ -29,9 +25,10 @@ from ground_station_ui.core.vehicle.groups import LINK_TIMEOUT_S
 
 ROUTES = ('px4', 'jetson')
 ROUTE_NAMES = {'px4': 'PX4 · 915', 'jetson': 'Jetson · 433'}
-ACTIONS = {'px4': ('takeoff', 'land'), 'jetson': ('takeoff', 'land', 'hold', 'rtl', 'upload')}
-FLIGHT_ACTIONS = ('takeoff', 'land', 'hold', 'rtl')
-LABELS = {'takeoff': 'Take-off', 'land': 'Land', 'hold': 'Hold', 'rtl': 'RTL', 'upload': 'Send WP'}
+ACTIONS = {'px4': ('takeoff', 'land'), 'jetson': ('takeoff', 'land', 'hold', 'rtl', 'upload', 'mission')}
+FLIGHT_ACTIONS = ('takeoff', 'land', 'hold', 'rtl', 'mission')
+LABELS = {'takeoff': 'Take-off', 'land': 'Land', 'hold': 'Hold', 'rtl': 'RTL', 'upload': 'Send WP',
+          'mission': 'Start mission'}
 IN_AIR = ('IN AIR', 'TAKING OFF', 'LANDING')
 NAN = float('nan')
 AUTO_LOITER = 3     # PX4_CUSTOM_SUB_MODE_AUTO_LOITER
@@ -42,7 +39,7 @@ def check_state(action, landed):
     """'' = cho gui; nguoc lai = ly do chan. landed: StatusGroup.values['landed']."""
     if action == 'takeoff' and landed in IN_AIR:
         return 'already flying'
-    if action in ('land', 'hold', 'rtl') and landed == 'ON GROUND':
+    if action in ('land', 'hold', 'rtl', 'mission') and landed == 'ON GROUND':
         return 'vehicle is on the ground'
     return ''
 
@@ -53,7 +50,7 @@ def px4_steps(action, altitude, armed, amsl):
     if action == 'takeoff':
         steps = [] if armed else [(mavlink.MAV_CMD_COMPONENT_ARM_DISARM, [1.0])]
         alt = amsl + altitude if amsl is not None and math.isfinite(altitude) else NAN
-        # PX4: param7 = AMSL; lat / lon / yaw NaN = vi tri, huong hien tai
+        # param7 = AMSL; lat / lon / yaw = NaN -> giu vi tri / huong
         steps.append((mavlink.MAV_CMD_NAV_TAKEOFF, [NAN, 0, 0, NAN, NAN, NAN, alt]))
         return steps
     if action == 'land':
@@ -72,6 +69,8 @@ def jetson_steps(action, altitude):
         return [(mavlink.MAV_CMD_NAV_LAND, [0, 0, 0, NAN, NAN, NAN, 0])]
     if action == 'hold':
         return [(mavlink.MAV_CMD_NAV_LOITER_UNLIM, [])]
+    if action == 'mission':     # mission_manager bay waypoint da upload (tu HOVER)
+        return [(mavlink.MAV_CMD_MISSION_START, [0, 0])]
     return [(mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH, [])]
 
 
@@ -97,17 +96,17 @@ class CommandLock:
         if armed or landed in IN_AIR:
             self._flew, self._idle_since = True, None
             return
-        if self._flew:                              # da bay, nay ve dat + disarm
+        if self._flew:                              # bay xong: ve dat + disarm
             self.owner = None
             return
         if owner_state in PENDING:
             self._idle_since = None
             return
-        if owner_state != 'accepted':               # tu choi / het han / bi chan: chua bay
+        if owner_state != 'accepted':               # rejected / timeout / denied
             self.owner = None
             return
         self._idle_since = self._idle_since if self._idle_since is not None else now
-        if now - self._idle_since > LINK_TIMEOUT_S:  # chap nhan nhung khong arm
+        if now - self._idle_since > LINK_TIMEOUT_S:  # accepted nhung khong arm
             self.owner = None
 
 
@@ -149,6 +148,8 @@ class FlightCommander:
             fix = self.vehicle.groups['gps'].values.get('fixType') or 0
             if action == 'rtl' and fix < 3:
                 return 'RTL needs GPS fix'
+            if action == 'mission' and fix < 3:        # waypoint la toa do GPS
+                return 'mission needs GPS fix'
             if action in ('takeoff', 'upload') and self.environment() == 'outdoor' and fix < 3:
                 return 'no GPS fix'
         return ''
@@ -158,6 +159,11 @@ class FlightCommander:
         return {r: {a: self.blocker(r, a) for a in ACTIONS[r]} for r in ROUTES}
 
     # --- thuc hien -------------------------------------------------------------------------
+    def _jetson(self):
+        """Dich Jetson tren companion_link (433 / SITL UDP)."""
+        self.jetson_target.link = self.vehicle.companion_link
+        return self.jetson_target
+
     def execute(self, route, action, altitude=NAN, test=False):
         """test=True (chi duong jetson): bo qua moi dieu kien phia GCS, Jetson tu quyet."""
         if action not in FLIGHT_ACTIONS or action not in ACTIONS[route] or (test and route != 'jetson'):
@@ -177,13 +183,13 @@ class FlightCommander:
                                    name=ROUTE_NAMES['px4'])
             sender.send_steps(target, px4_steps(action, altitude, status['armed'], self._amsl()), label)
         else:
-            sender.send_steps(self.jetson_target, jetson_steps(action, altitude), label)
+            sender.send_steps(self._jetson(), jetson_steps(action, altitude), label)
         self.lock.claim(route)
         return True
 
     def ping(self):
-        """Kiem tra duong ground <-> Jetson: Jetson tra ACK (khong dung PX4). Ket qua o senders['jetson']."""
-        self.senders['jetson'].send_steps(self.jetson_target, [(mavlink.MAV_CMD_USER_1, [])], 'Link test')
+        """Ping Jetson (ACK khong qua PX4). Ket qua o senders['jetson']."""
+        self.senders['jetson'].send_steps(self._jetson(), [(mavlink.MAV_CMD_USER_1, [])], 'Link test')
 
     def tick(self, now):
         st = self.vehicle.groups['status'].values
@@ -192,7 +198,7 @@ class FlightCommander:
                          self.senders[owner].values['state'] if owner else 'idle')
 
     def _amsl(self):
-        """Do cao AMSL hien tai neu co vi tri toan cuc tin duoc (GPS 3D fix), nguoc lai None."""
+        """Do cao AMSL hien tai khi GPS >= 3D fix, nguoc lai None."""
         g = self.vehicle.groups
         if (g['gps'].values.get('fixType') or 0) < 3:
             return None

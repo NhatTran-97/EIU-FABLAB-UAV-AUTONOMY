@@ -43,7 +43,7 @@ def evaluate(vehicle, links, env_effective='indoor', env_mismatch=''):
     if env_mismatch:
         add('warning', 'Config', env_mismatch)
 
-    jet_link = links.get('jetson', {})
+    jet_link = links.get(getattr(vehicle, 'companion_link', 'jetson'), {})
     if not comp.get('linkAlive'):
         if jet_link.get('isOpen') or comp.get('heartbeatAge', -1) >= 0:
             add('warning', 'Jetson', 'Jetson link lost (radio 433)')

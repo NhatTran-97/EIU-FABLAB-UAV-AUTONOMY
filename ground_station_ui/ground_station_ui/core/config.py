@@ -1,5 +1,4 @@
-"""Kiem tra config/gcs.yaml luc khoi dong: bao loi cu the (file + muc) thay vi KeyError giua chung
-hoac am tham bo qua. validate(cfg) -> (errors, warnings); co error -> app khong chay."""
+"""Kiem tra config/gcs.yaml luc khoi dong. validate(cfg) -> (errors, warnings); errors khac rong -> thoat."""
 
 LINK_TYPES = ('serial', 'udp')
 
@@ -29,6 +28,9 @@ def validate(cfg):
             host, _, port = listen.rpartition(':')
             if not host or not port.isdigit():
                 errors.append(f'{where}: "listen" phai dang host:port (dang co "{listen}")')
+            remote = ln.get('remote')
+            if remote is not None and not str(remote).rpartition(':')[2].isdigit():
+                errors.append(f'{where}: "remote" phai dang host:port (dang co "{remote}")')
         if t == 'serial' and 'baud' in ln and not str(ln['baud']).isdigit():
             errors.append(f'{where}: baud "{ln["baud"]}" khong phai so')
     if not names:
@@ -38,9 +40,13 @@ def validate(cfg):
     for ln in veh.get('autopilot_links') or []:
         if ln not in names:
             errors.append(f'vehicle.autopilot_links: link "{ln}" khong co trong links')
-    comp = veh.get('companion_link', 'jetson')
-    if names and comp not in names:
-        warnings.append(f'vehicle.companion_link: link "{comp}" khong co trong links -> khong nhan du lieu Jetson')
+    comps = veh.get('companion_links') or [veh.get('companion_link', 'jetson')]
+    for comp in comps:
+        if names and comp not in names:
+            warnings.append(f'vehicle.companion_link(s): link "{comp}" khong co trong links -> khong nhan du lieu Jetson')
+    for ln in veh.get('autopilot_links') or []:
+        if ln in comps:
+            errors.append(f'vehicle: link "{ln}" vua la autopilot_links vua la companion_links')
     cmd_link = (cfg.get('commands') or {}).get('link', 'jetson')
     if names and cmd_link not in names:
         errors.append(f'commands.link: link "{cmd_link}" khong co trong links')

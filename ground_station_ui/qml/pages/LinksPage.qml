@@ -21,8 +21,8 @@ ColumnLayout {
                                       Math.floor((page.availableWidth + Theme.gap) / (page.panelMin + Theme.gap))))
         columnSpacing: Theme.gap; rowSpacing: Theme.gap
 
-        // Danh sach link lay tu config/gcs.yaml. Model = SO LUONG (khong phai list): list duoc
-        // tao moi moi tick, neu dung lam model thi delegate bi tao lai -> ComboBox mat lua chon.
+        // link tu config/gcs.yaml. model = so luong: list tao moi moi tick -> dung list lam model se tao lai
+        // delegate (ComboBox mat lua chon).
         Repeater {
             model: links.items.length
             delegate: LinkPanel {

@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 
-// Tai truoc vung dang hien thi vao cache .mbtiles de bay khi khong co mang (nhu QGC Offline Maps).
+// Tai truoc vung dang xem vao cache .mbtiles (dung offline).
 Rectangle {
     id: panel
     property var map: null

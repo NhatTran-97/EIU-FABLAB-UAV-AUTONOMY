@@ -52,7 +52,7 @@ Rectangle {
                 textRole: "label"
                 valueRole: "device"
                 enabled: !panel.info.active
-                // Dang ket noi -> hien dung cong dang dung (co the khong con trong danh sach)
+                // dang ket noi: hien cong dang dung (co the khong con trong danh sach)
                 displayText: panel.info.active ? panel.info.port : currentText
                 Component.onCompleted: currentIndex = Math.max(0, indexOfValue(panel.info.port))
             }

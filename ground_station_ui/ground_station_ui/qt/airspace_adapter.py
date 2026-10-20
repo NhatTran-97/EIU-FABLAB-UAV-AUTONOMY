@@ -20,7 +20,7 @@ class AirspaceAdapter(QObject):
         super().__init__(parent)
         self._dirs = [str(data_path(d)) for d in cfg.get('dirs', ['data/airspace'])]
         for d in self._dirs[:1]:
-            Path(d).mkdir(parents=True, exist_ok=True)   # thu muc dau tien: noi nguoi dung chep file vao
+            Path(d).mkdir(parents=True, exist_ok=True)   # thu muc dau: noi dat file vung bay
         self._settings = QSettings()
         self._visible = self._settings.value('airspace/visible', True, type=bool)
         hidden = self._settings.value('airspace/hiddenKinds', [], type=list)
