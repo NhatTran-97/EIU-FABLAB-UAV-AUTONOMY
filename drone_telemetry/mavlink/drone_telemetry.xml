@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <!--
-  MAVLink dialect cho link drone -> dashboard (radio SiK 433 MHz, /dev/telem_radio).
-  Sau khi sua file nay: chay scripts/gen_dialect.sh de sinh lai drone_telemetry/drone_dialect.py
-  va copy file .py do sang node ground (2 dau phai dung CUNG mot dialect).
-  Message ID tu dinh nghia: dai 45000-45099 (khong trung voi common/ardupilot/development).
+  MAVLink dialect for the drone -> ground station link (SiK 433 MHz radio, /dev/telem_radio).
+  After editing this file, run scripts/gen_dialect.sh to regenerate drone_telemetry/drone_dialect.py and
+  copy the generated file to the ground station: both ends must use the same dialect.
+  Custom message IDs use the 45000-45099 range (no overlap with common/ardupilot/development).
 -->
 <mavlink>
   <include>common.xml</include>
@@ -12,48 +12,48 @@
 
   <enums>
     <enum name="DRONE_COMPONENT">
-      <description>Thiet bi tren drone duoc theo doi.</description>
+      <description>Monitored on-board component.</description>
       <entry value="1" name="DRONE_COMPONENT_LIDAR"><description>Lidar STL-50B2.</description></entry>
-      <entry value="2" name="DRONE_COMPONENT_GIMBAL"><description>Gimbal Skydroid.</description></entry>
-      <entry value="3" name="DRONE_COMPONENT_CAMERA"><description>Camera Skydroid (RGB).</description></entry>
-      <entry value="4" name="DRONE_COMPONENT_PX4"><description>PX4 qua uXRCE-DDS.</description></entry>
-      <entry value="5" name="DRONE_COMPONENT_RADIO"><description>Radio SiK 433 tren drone: rate_hz = byte/s gui xuong, state = "BUF xx%" (bo dem phat con trong, txbuf cua RADIO_STATUS).</description></entry>
+      <entry value="2" name="DRONE_COMPONENT_GIMBAL"><description>Skydroid gimbal.</description></entry>
+      <entry value="3" name="DRONE_COMPONENT_CAMERA"><description>Skydroid camera (RGB).</description></entry>
+      <entry value="4" name="DRONE_COMPONENT_PX4"><description>PX4 over uXRCE-DDS.</description></entry>
+      <entry value="5" name="DRONE_COMPONENT_RADIO"><description>On-board SiK 433 radio: rate_hz = downlink bytes/s, state = "BUF xx%" (free transmit buffer, RADIO_STATUS txbuf).</description></entry>
     </enum>
     <enum name="DRONE_COMPONENT_LEVEL">
-      <description>Muc tinh trang, cung gia tri voi diagnostic_msgs/DiagnosticStatus.</description>
-      <entry value="0" name="DRONE_COMPONENT_LEVEL_OK"><description>San sang / hoat dong binh thuong.</description></entry>
-      <entry value="1" name="DRONE_COMPONENT_LEVEL_WARN"><description>Dang chay nhung co van de.</description></entry>
-      <entry value="2" name="DRONE_COMPONENT_LEVEL_ERROR"><description>Loi, khong hoat dong.</description></entry>
-      <entry value="3" name="DRONE_COMPONENT_LEVEL_STALE"><description>Khong nhan duoc thong tin tu node (node chet / chua chay).</description></entry>
+      <description>Health level, same values as diagnostic_msgs/DiagnosticStatus.</description>
+      <entry value="0" name="DRONE_COMPONENT_LEVEL_OK"><description>Ready / operating normally.</description></entry>
+      <entry value="1" name="DRONE_COMPONENT_LEVEL_WARN"><description>Running with a problem.</description></entry>
+      <entry value="2" name="DRONE_COMPONENT_LEVEL_ERROR"><description>Error, not operating.</description></entry>
+      <entry value="3" name="DRONE_COMPONENT_LEVEL_STALE"><description>No data from the node (crashed or not started).</description></entry>
     </enum>
   </enums>
 
   <messages>
     <message id="45000" name="DRONE_COMPONENT_STATUS">
-      <description>Trang thai hien tai va tan so hoat dong cua mot thiet bi tren drone.</description>
-      <field type="uint8_t" name="component_id" enum="DRONE_COMPONENT">Thiet bi.</field>
-      <field type="uint8_t" name="level" enum="DRONE_COMPONENT_LEVEL">Muc tinh trang.</field>
-      <field type="float" name="rate_hz" units="Hz">Tan so hoat dong do duoc (0 neu khong co du lieu).</field>
-      <field type="char[16]" name="state">Trang thai dang chu, vd STREAMING, READY, DISCONNECTED.</field>
+      <description>Current state and measured rate of one on-board component.</description>
+      <field type="uint8_t" name="component_id" enum="DRONE_COMPONENT">Component.</field>
+      <field type="uint8_t" name="level" enum="DRONE_COMPONENT_LEVEL">Health level.</field>
+      <field type="float" name="rate_hz" units="Hz">Measured rate (0 without data).</field>
+      <field type="char[16]" name="state">State as text, e.g. STREAMING, READY, DISCONNECTED.</field>
     </message>
     <message id="45001" name="DRONE_LOCAL_POSE">
-      <description>Vi tri + tu the cuc bo cua drone (PX4 vehicle_odometry qua uXRCE-DDS tren Jetson), de ground station ve 3D. Frame NED cua EKF PX4 (goc = noi EKF khoi tao), giu nguyen quy uoc PX4; ground doi sang ENU khi ve.</description>
-      <field type="uint32_t" name="time_boot_ms" units="ms">Thoi diem mau (timestamp_sample cua PX4).</field>
-      <field type="float" name="x" units="m">Vi tri North.</field>
-      <field type="float" name="y" units="m">Vi tri East.</field>
-      <field type="float" name="z" units="m">Vi tri Down (am = cao hon goc).</field>
-      <field type="float[4]" name="q">Quaternion w, x, y, z: FRD (than drone) -&gt; NED.</field>
-      <field type="float" name="vx" units="m/s">Van toc North.</field>
-      <field type="float" name="vy" units="m/s">Van toc East.</field>
-      <field type="float" name="vz" units="m/s">Van toc Down.</field>
-      <field type="uint8_t" name="reset_counter">Tang khi EKF dat lai vi tri (nhay vi tri) -- ground xoa vet bay.</field>
+      <description>Local position and attitude (PX4 vehicle_odometry over uXRCE-DDS on the Jetson) for the ground station 3D view. PX4 EKF NED frame (origin = EKF initialisation point), PX4 conventions kept; the ground converts to ENU.</description>
+      <field type="uint32_t" name="time_boot_ms" units="ms">Sample time (PX4 timestamp_sample).</field>
+      <field type="float" name="x" units="m">North position.</field>
+      <field type="float" name="y" units="m">East position.</field>
+      <field type="float" name="z" units="m">Down position (negative = above the origin).</field>
+      <field type="float[4]" name="q">Quaternion w, x, y, z: FRD (body) -&gt; NED.</field>
+      <field type="float" name="vx" units="m/s">North velocity.</field>
+      <field type="float" name="vy" units="m/s">East velocity.</field>
+      <field type="float" name="vz" units="m/s">Down velocity.</field>
+      <field type="uint8_t" name="reset_counter">Incremented on an EKF position reset (position jump); the ground clears its trail.</field>
     </message>
     <message id="45003" name="DRONE_GIMBAL_STATE">
-      <description>Goc gimbal Skydroid tu Jetson (/gimbal_state, skydroid_msgs/GimbalState) -- goc do gimbal bao, so voi than drone.</description>
+      <description>Skydroid gimbal angles from the Jetson (/gimbal_state, skydroid_msgs/GimbalState), as reported by the gimbal, relative to the drone body.</description>
       <field type="float" name="yaw" units="deg">Yaw.</field>
-      <field type="float" name="pitch" units="deg">Pitch (am = nhin xuong).</field>
+      <field type="float" name="pitch" units="deg">Pitch (negative = looking down).</field>
       <field type="float" name="roll" units="deg">Roll.</field>
-      <field type="uint8_t" name="connected">1 = Jetson dang ket noi gimbal.</field>
+      <field type="uint8_t" name="connected">1 = Jetson connected to the gimbal.</field>
       <field type="uint8_t" name="control_mode">0 = MANUAL, 1 = AUTO (GimbalCommand).</field>
     </message>
   </messages>

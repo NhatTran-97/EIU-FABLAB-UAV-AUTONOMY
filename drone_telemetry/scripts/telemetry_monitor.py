@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Monitor du lieu drone_telemetry phia ground (khong can ROS).
+"""Ground-side monitor for drone_telemetry data (no ROS needed).
 
-    python3 telemetry_monitor.py --port /dev/ttyUSB0      # cong cua module Ground
+    python3 telemetry_monitor.py --port /dev/ttyUSB0      # port of the ground radio
 
-Cho cong xuat hien neu module Ground chua cam, va tu mo lai khi bi rut giua chung.
-Node ground that su co the dung lai dung cach parse o day: drone_dialect.MAVLink.parse_buffer().
+Waits for the port if the ground radio is not plugged in, and reopens it after an unplug.
+A real ground node can parse the same way: drone_dialect.MAVLink.parse_buffer().
 """
 
 import argparse
@@ -17,7 +17,7 @@ from serial.tools import list_ports
 
 try:
     from drone_telemetry import drone_dialect as mavlink
-except ImportError:   # chay tu source
+except ImportError:   # running from source
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
     from drone_telemetry import drone_dialect as mavlink
 
@@ -35,23 +35,23 @@ def open_port(port, baud):
         except (serial.SerialException, OSError) as e:
             if not warned:
                 warned = True
-                print(f'Khong mo duoc {port}: {e}')
+                print(f'Cannot open {port}: {e}')
                 usb = [p.device for p in list_ports.comports()
                        if 'USB' in p.device or 'ACM' in p.device]
-                print('Cong USB serial dang co: '
-                      + (', '.join(usb) if usb else 'khong co (module Ground chua cam?)'))
-                print('Dang cho cong xuat hien... (Ctrl+C de thoat)')
+                print('Available USB serial ports: '
+                      + (', '.join(usb) if usb else 'none (ground radio not plugged in?)'))
+                print('Waiting for the port... (Ctrl+C to quit)')
             time.sleep(1.0)
 
 
 def show(now, comps, heartbeat_at, radio):
-    print('\033[2J\033[H', end='')   # xoa man hinh
-    hb = f'{now - heartbeat_at:.1f}s truoc' if heartbeat_at else 'chua nhan'
+    print('\033[2J\033[H', end='')   # clear screen
+    hb = f'{now - heartbeat_at:.1f}s ago' if heartbeat_at else 'not received'
     print(f'Heartbeat drone: {hb}')
     if radio:
         print(f'Radio: RSSI {radio.rssi}/{radio.remrssi}  noise {radio.noise}/{radio.remnoise}'
               f'  rxerrors {radio.rxerrors}')
-    print(f"\n{'Thiet bi':<8} {'Level':<6} {'State':<16} {'Hz':>6}  Cap nhat")
+    print(f"\n{'Device':<8} {'Level':<6} {'State':<16} {'Hz':>6}  Updated")
     for cid in sorted(comps):
         t, m = comps[cid]
         age = now - t
@@ -88,7 +88,7 @@ def main():
                     next_print = now + 1.0
                     show(now, comps, heartbeat_at, radio)
         except (serial.SerialException, OSError) as e:
-            print(f'\nMat ket noi {args.port}: {e}. Cho cam lai...')
+            print(f'\nLost {args.port}: {e}. Waiting for it to be plugged back in...')
         finally:
             ser.close()
 

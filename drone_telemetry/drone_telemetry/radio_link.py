@@ -1,8 +1,8 @@
-"""Cong serial toi radio SiK -- ghi frame MAVLink, doc + parse frame nhan ve.
+"""Serial link to the SiK radio: writes MAVLink frames, reads and parses incoming frames.
 
-Khong phu thuoc ROS: nhan logger (.info/.warn/.error) va callback on_message(msg).
-Loi I/O (cong chua co / bi rut) khong nem ra ngoai: danh dau dong cong; node goi ensure_open()
-dinh ky de mo lai.
+No ROS dependency: takes a logger (.info/.warn/.error) and an on_message(msg) callback. I/O errors
+(port missing or unplugged) are not raised; the port is marked closed and the node calls
+ensure_open() periodically to reopen it.
 """
 
 import threading
@@ -23,7 +23,7 @@ class RadioLink:
         self._lock = threading.Lock()
         self._reader = None
         self._stop = threading.Event()
-        # file=None: encode bang pack(); parser rieng cho chieu nhan
+        # file=None: frames are encoded with pack(); a separate parser handles receive
         self.mav = mavlink.MAVLink(None, srcSystem=system_id, srcComponent=component_id)
         self._parser = mavlink.MAVLink(None)
         self._parser.robust_parsing = True
@@ -44,7 +44,7 @@ class RadioLink:
         except (serial.SerialException, OSError) as e:
             if time.monotonic() - self._last_open_warn > 10.0:
                 self._last_open_warn = time.monotonic()
-                self._log.warn(f"Khong mo duoc {self.port}: {e}")
+                self._log.warn(f"Cannot open {self.port}: {e}")
             return False
         with self._lock:
             self._ser = ser
@@ -54,9 +54,9 @@ class RadioLink:
         return True
 
     def send(self, msg, force_v1=False):
-        """Encode + ghi 1 message MAVLink. False neu cong dong / loi.
+        """Encode and write one MAVLink message. Returns False if the port is closed or the write fails.
 
-        force_v1: radio SiK 1.9 chi chen RADIO_STATUS (RSSI, txbuf) khi thay heartbeat v1.
+        force_v1: SiK 1.9 radios only inject RADIO_STATUS (RSSI, txbuf) after a MAVLink v1 heartbeat.
         """
         with self._lock:
             if self._ser is None:
@@ -68,7 +68,7 @@ class RadioLink:
                 return True
             except (serial.SerialException, OSError) as e:
                 self.tx_errors += 1
-                self._log.error(f"Ghi {self.port} loi: {e}")
+                self._log.error(f"Write to {self.port} failed: {e}")
                 self._close_locked()
                 return False
 
@@ -90,10 +90,10 @@ class RadioLink:
             try:
                 data = ser.read(ser.in_waiting or 1)
             except (serial.SerialException, OSError, TypeError) as e:
-                # TypeError: pyserial, cong bi dong tu thread khac
+                # TypeError: raised by pyserial when another thread closed the port
                 with self._lock:
                     if self._ser is ser:
-                        self._log.error(f"Doc {self.port} loi: {e}")
+                        self._log.error(f"Read from {self.port} failed: {e}")
                         self._close_locked()
                 return
             if not data:

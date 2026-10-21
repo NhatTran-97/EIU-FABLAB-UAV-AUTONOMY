@@ -1,12 +1,12 @@
-"""Trang thai + tan so tung thiet bi. Khong phu thuoc ROS.
+"""Per-component state and rate tracking. No ROS dependency.
 
-Moi thiet bi co mot ComponentMonitor, lay du lieu tu 1 trong 2 nguon:
-  * diagnostics : 1 DiagnosticStatus (theo `diag_name`) tren /diagnostics.
-                  state = values[state_key], level = level cua driver,
-                  tan so = values[rate_key], hoac suy tu bo dem values[count_key].
-  * topic       : tu dem so message tren mot topic (vd PX4 khong co diagnostics).
+Each component has a ComponentMonitor fed by one of two sources:
+  * diagnostics : a DiagnosticStatus on /diagnostics (matched by `diag_name`).
+                  state = values[state_key], level = the driver's level,
+                  rate = values[rate_key], or derived from the counter values[count_key].
+  * topic       : the monitor counts messages on a topic (e.g. PX4, which has no diagnostics).
 
-snapshot(now) -> (level, rate_hz, state). Khong co du lieu > `stale_timeout` -> LEVEL_STALE.
+snapshot(now) returns (level, rate_hz, state); no data for `stale_timeout` gives LEVEL_STALE.
 """
 
 LEVEL_OK = 0
@@ -14,7 +14,7 @@ LEVEL_WARN = 1
 LEVEL_ERROR = 2
 LEVEL_STALE = 3
 
-STATE_MAX_LEN = 16   # char[16] trong DRONE_COMPONENT_STATUS
+STATE_MAX_LEN = 16   # char[16] in DRONE_COMPONENT_STATUS
 
 
 def _to_float(text):
@@ -33,7 +33,7 @@ class ComponentMonitor:
         self.state_key = state_key
         self.rate_key = rate_key
         self.count_key = count_key
-        self.min_rate_hz = min_rate_hz        # chi dung cho nguon topic; 0 = tat
+        self.min_rate_hz = min_rate_hz        # topic source only; 0 = disabled
         self.rate_window = rate_window
 
         self._last_update = None
@@ -41,11 +41,11 @@ class ComponentMonitor:
         self._state = "NO_DATA"
         self._rate = 0.0
 
-        self._prev_count = None               # count_key: (now, count) lan truoc
-        self._msg_count = 0                   # nguon topic
+        self._prev_count = None               # count_key: previous (now, count)
+        self._msg_count = 0                   # topic source
         self._window_start = None
 
-    # --- nguon diagnostics ---------------------------------------------------------------
+    # --- diagnostics source --------------------------------------------------------------
     def update_from_diag(self, now, level, message, values):
         """values: dict key -> str (DiagnosticStatus.values)."""
         self._last_update = now
@@ -60,13 +60,13 @@ class ComponentMonitor:
             if count is not None and self._prev_count is not None:
                 t0, c0 = self._prev_count
                 dt = now - t0
-                # count giam: node khoi dong lai -> bo mau nay
+                # counter went down: the node restarted, skip this sample
                 if dt > 0 and count >= c0:
                     self._rate = (count - c0) / dt
             if count is not None:
                 self._prev_count = (now, count)
 
-    # --- nguon topic ---------------------------------------------------------------------
+    # --- topic source --------------------------------------------------------------------
     def on_message(self, now):
         if self._window_start is None:
             self._window_start = now
@@ -74,7 +74,7 @@ class ComponentMonitor:
         self._last_update = now
 
     def tick(self, now):
-        """Goi dinh ky (nguon topic): tinh tan so tren cua so rate_window."""
+        """Call periodically (topic source): compute the rate over rate_window."""
         if self._window_start is None:
             return
         dt = now - self._window_start
@@ -87,7 +87,7 @@ class ComponentMonitor:
             else:
                 self._level, self._state = LEVEL_OK, "STREAMING"
 
-    # --- ket qua -------------------------------------------------------------------------
+    # --- result ------------------------------------------------------------------------
     def snapshot(self, now):
         if self._last_update is None or now - self._last_update > self.stale_timeout:
             return LEVEL_STALE, 0.0, "NO_DATA"

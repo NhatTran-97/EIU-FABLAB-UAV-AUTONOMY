@@ -3,7 +3,7 @@
 <package format="3">
   <name>drone_telemetry</name>
   <version>0.0.0</version>
-  <description>Gui trang thai + tan so cac thiet bi tren drone xuong dashboard qua radio SiK (MAVLink v2, dialect rieng)</description>
+  <description>Sends on-board component status, pose and position to the ground station over a SiK radio (MAVLink v2, custom dialect), and forwards ground commands to PX4.</description>
   <maintainer email="nhat.tranduy1997@gmail.com">duynhat</maintainer>
   <license>Apache-2.0</license>
 

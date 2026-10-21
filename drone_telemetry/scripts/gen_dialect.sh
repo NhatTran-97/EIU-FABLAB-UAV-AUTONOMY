@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Sinh lai drone_telemetry/drone_dialect.py tu mavlink/drone_telemetry.xml.
+# Regenerate drone_telemetry/drone_dialect.py from mavlink/drone_telemetry.xml.
 #
-# Cach dung:
-#   ./gen_dialect.sh [thu muc message_definitions/v1.0 chua common.xml]
-# Bo trong tham so -> tai common.xml/standard.xml/minimal.xml tu repo mavlink tren GitHub.
-# Can pymavlink luc sinh code; file sinh ra khong phu thuoc pymavlink.
+# Usage:
+#   ./gen_dialect.sh [message_definitions/v1.0 directory containing common.xml]
+# Without an argument, common.xml / standard.xml / minimal.xml are downloaded from the mavlink GitHub repo.
+# pymavlink is needed only for generation; the generated module does not depend on it.
 set -euo pipefail
 
 PKG_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,8 +24,8 @@ cp "$PKG_DIR/mavlink/drone_telemetry.xml" "$WORK/"
 python3 - "$WORK/drone_telemetry.xml" "$PKG_DIR/drone_telemetry/drone_dialect" <<'EOF'
 import sys
 from pymavlink.generator import mavgen
-opts = mavgen.Opts(sys.argv[2], wire_protocol="2.0", language="Python3", validate=False)  # schema cua pymavlink co the cu hon common.xml
+opts = mavgen.Opts(sys.argv[2], wire_protocol="2.0", language="Python3", validate=False)  # pymavlink schema may be older than common.xml
 if not mavgen.mavgen(opts, [sys.argv[1]]):
     sys.exit("mavgen failed")
 EOF
-echo "Da sinh $PKG_DIR/drone_telemetry/drone_dialect.py"
+echo "Generated $PKG_DIR/drone_telemetry/drone_dialect.py"
