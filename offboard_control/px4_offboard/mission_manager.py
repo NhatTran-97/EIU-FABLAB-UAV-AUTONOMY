@@ -46,8 +46,8 @@ from custom_msgs.msg import AvoidanceStatus
 
 from mission_pipeline.compiler import CompileConfig, MissionOptions, compile_mission
 from mission_pipeline.executor import DONE, MissionExecutor
-from mission_pipeline.navigation import CLEAR, STATUS_AVOIDING, AvoidanceConfig, AvoidanceNav, DirectNav, \
-    status_timeout
+from mission_pipeline.navigation import CLEAR, STALE as STALE_STATE, STATUS_AVOIDING, AvoidanceConfig, \
+    AvoidanceNav, DirectNav, status_timeout
 from mission_pipeline.steps import RUNNING, Failed, Navigate, StepConfig
 
 SEV_WARNING, SEV_INFO = 4, 6
@@ -190,6 +190,12 @@ class MissionManagerNode(Node):
         # distance does not shrink by stuck_min_progress within stuck_timeout, treat it as blocked.
         self.declare_parameter('stuck_timeout', 15.0)
         self.declare_parameter('stuck_min_progress', 1.0)
+        # Keep distance while hovering: an obstacle closer than hover_keep_distance (m) moves the hover point
+        # away from it at hover_retreat_speed, at most hover_max_drift from where HOVER began. 0 = off.
+        # Uses the avoidance node (min_distance / bearing), so allow_avoidance must be true.
+        self.declare_parameter('hover_keep_distance', 0.0)
+        self.declare_parameter('hover_retreat_speed', 0.5)   # m/s
+        self.declare_parameter('hover_max_drift', 3.0)       # m
 
         # Pick tasks at waypoints: marker from the ArUco localizer, hook through the payload node.
         self.declare_parameter('marker_topic', '/marker_localizer_node/marker_rel')  # PointStamped, ENU offset
@@ -212,6 +218,9 @@ class MissionManagerNode(Node):
         self.max_cruise_speed = float(g('max_cruise_speed'))
         self.allow_avoidance = bool(g('allow_avoidance'))
         self.avoidance_ready_timeout = float(g('avoidance_ready_timeout'))
+        self.hover_keep_distance = float(g('hover_keep_distance'))
+        self.hover_retreat_speed = float(g('hover_retreat_speed'))
+        self.hover_max_drift = float(g('hover_max_drift'))
         self.avoidance_cfg = AvoidanceConfig(
             timeout_periods=float(g('avoidance_timeout_periods')), max_timeout=float(g('avoidance_max_timeout')),
             clear_time=float(g('avoidance_clear_time')), blocked_timeout=float(g('blocked_timeout')),
@@ -311,6 +320,9 @@ class MissionManagerNode(Node):
         self.last_progress = None
         self.last_progress_time = 0.0
         self.last_status_log_time = 0.0
+        self.hover_anchor = None         # hover point when HOVER began (limits the keep-distance drift)
+        self.hover_tick_time = None
+        self.retreating = False
 
         self.timer = self.create_timer(1.0 / self.control_rate_hz, self.timer_callback)
         self.get_logger().info('Mission manager node started')
@@ -412,6 +424,8 @@ class MissionManagerNode(Node):
 
     def handle_hover(self) -> None:
         """Hold the HOVER point (take-off point, last mission target or where a pause ended)."""
+        if self.keep_distance_on():
+            self.keep_distance()
         self.publish_target_position(self.hover_target)
         self.publish_target_yaw(self.hover_yaw)
         self.maybe_log_status(
@@ -419,9 +433,54 @@ class MissionManagerNode(Node):
             f'{self.current_position.z:.2f}) | target=({self.hover_target.x:.2f}, {self.hover_target.y:.2f}, '
             f'{self.hover_target.z:.2f})', 2.0)
 
+    def keep_distance_on(self) -> bool:
+        """Keep-distance in HOVER: enabled by parameter, allowed, and the avoidance node is running."""
+        return (self.state == MissionState.HOVER and self.hover_keep_distance > 0.0 and self.allow_avoidance
+                and self.count_subscribers('/avoidance/enable') > 0)
+
+    def keep_distance(self) -> None:
+        """Move the hover point away from an obstacle closer than hover_keep_distance.
+
+        The avoidance node needs a goal, so the hover point is sent as the goal. The drone moves straight away
+        from the nearest obstacle and stays where it ends up; it does not return when the obstacle leaves.
+        Without fresh data, with a STALE status, or at hover_max_drift, the hover point is kept.
+        """
+        now = self.now_sec()
+        dt = 0.0 if self.hover_tick_time is None else min(now - self.hover_tick_time, 0.2)
+        self.hover_tick_time = now
+        if self.hover_anchor is None:
+            self.hover_anchor = (self.hover_target.x, self.hover_target.y)
+        t = self.hover_target
+        self.ctx.publish_goal((t.x, t.y, t.z))
+        st, received = self.avoidance_status, self.avoidance_status_time
+        fresh = (st is not None and received is not None and st.state != STALE_STATE
+                 and now - received <= status_timeout(self.avoidance_cfg, st))
+        near = fresh and math.isfinite(st.min_distance) and st.min_distance < self.hover_keep_distance
+        if near != self.retreating:
+            self.retreating = near
+            if near:
+                self.say(f'Obstacle {st.min_distance:.1f} m: moving away', warn=True)
+        if not near or dt <= 0.0:
+            return
+        away = st.min_distance_bearing + math.pi
+        step = min(self.hover_retreat_speed * dt, self.hover_keep_distance - st.min_distance)
+        x, y = t.x + step * math.cos(away), t.y + step * math.sin(away)
+        ax, ay = self.hover_anchor
+        drift = math.hypot(x - ax, y - ay)
+        if drift > self.hover_max_drift:                 # stay on the drift circle
+            x, y = ax + (x - ax) * self.hover_max_drift / drift, ay + (y - ay) * self.hover_max_drift / drift
+        self.hover_target = Point(x=x, y=y, z=t.z)
+
     def handle_starting(self) -> None:
-        """Hover while the selected options get ready; then start the plan or reject the command."""
+        """Hover while the selected options get ready; then start the plan or reject the command.
+
+        The avoidance node reports STALE until it has a goal, so the first waypoint is sent as the goal
+        while waiting; otherwise it could never report CLEAR and every avoidance mission would time out.
+        """
         self.handle_hover()
+        first = next((e.step for e in self.plan_runner.plan if isinstance(e.step, Navigate)), None)
+        if first is not None:
+            self.ctx.publish_goal(first.point)
         status, received = self.avoidance_status, self.avoidance_status_time
         now = self.now_sec()
         fresh = (status is not None and received is not None and received >= self.starting_since
@@ -729,7 +788,8 @@ class MissionManagerNode(Node):
         self.avoidance_status = msg
         self.avoidance_status_time = self.now_sec()
         step = self.plan_runner.current_step if self.plan_runner else None
-        if self.avoidance_in_use() and isinstance(step, Navigate):
+        # Not while Navigate turns in place at the start of a leg: it holds position until aligned.
+        if self.avoidance_in_use() and isinstance(step, Navigate) and not step.turning:
             setpoint = self.ctx.nav.setpoint(self.ctx, step.point)
             if not isinstance(setpoint, Failed):        # a failure is handled on the next timer tick
                 self.ctx.set_target(*setpoint)
@@ -790,7 +850,7 @@ class MissionManagerNode(Node):
 
     def publish_avoidance_enable(self):
         """Enable the avoidance node while it is needed; nothing is sent for missions without avoidance."""
-        on = self.state == MissionState.STARTING or self.avoidance_in_use()
+        on = self.state == MissionState.STARTING or self.avoidance_in_use() or self.keep_distance_on()
         if on or self.avoidance_was_on:
             self.avoidance_enable_pub.publish(Bool(data=on))
         self.avoidance_was_on = on
@@ -848,6 +908,7 @@ class MissionManagerNode(Node):
         elif new_state in (MissionState.IDLE, MissionState.TAKEOFF):
             self.hover_yaw = math.nan
         self.goal_hold_start = None
+        self.hover_anchor, self.hover_tick_time, self.retreating = None, None, False
         self.get_logger().info(f'State transition: {old_state.name} --> {new_state.name}')
 
     def update_goal_hold(self, goal: Point) -> bool:

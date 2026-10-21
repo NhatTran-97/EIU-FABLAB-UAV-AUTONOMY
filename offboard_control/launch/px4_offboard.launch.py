@@ -34,6 +34,9 @@ def generate_launch_description():
             # Obstacle avoidance is chosen per mission on the GCS; false rejects those missions until the
             # obstacle_avoidance node has been tested.
             'allow_avoidance': False,
+            # Keep distance while hovering (needs allow_avoidance and the avoidance node): an obstacle closer
+            # than this (m) moves the drone away, at most hover_max_drift (3 m). 0 = off.
+            'hover_keep_distance': 0.0,
             'marker_topic': '/marker_localizer_node/marker_rel',   # ArUco offset for pick tasks
             'payload_service': '/payload/hook',                    # std_srvs/Trigger, automatic hook
         }],

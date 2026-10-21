@@ -295,3 +295,102 @@ def test_live_settings_change_a_running_mission_only():
     assert ack['result'] == 'accepted'
     assert sim.node.ctx.nav.cruise_speed == 1.0
     assert sim.node.ctx.cfg.xy_tolerance == 1.5 and sim.node.ctx.cfg.z_tolerance == sim.node.step_cfg.z_tolerance
+
+
+def avoidance_sim():
+    """Mission node with avoidance allowed and a stand-in avoidance node that, like the real one, reports
+    STALE until it has received a goal and then CLEAR with a carrot towards that goal."""
+    from custom_msgs.msg import AvoidanceStatus
+    sim = Sim()
+    n = sim.node
+    n.allow_avoidance = True
+    sim.enable_sub = n.create_subscription(Bool, '/avoidance/enable', lambda m: None, 10)
+    sim.goal = None
+    n.goal_pub.publish = lambda m: setattr(sim, 'goal', (m.x, m.y, m.z))
+    sim.carrots = 0
+
+    def scan():
+        st = AvoidanceStatus()
+        st.scan_period = 0.1
+        if sim.goal is None:
+            st.state = AvoidanceStatus.STALE
+        else:
+            st.state = AvoidanceStatus.CLEAR
+            dn, de = sim.goal[0] - sim.pos[0], sim.goal[1] - sim.pos[1]
+            d = max(math.hypot(dn, de), 1e-9)
+            k = min(1.0, 2.0 / d)
+            st.safe_setpoint.x, st.safe_setpoint.y = sim.pos[0] + k * dn, sim.pos[1] + k * de
+            sim.carrots += 1
+        n.avoidance_status_callback(st)
+    sim.scan = scan
+    return sim
+
+
+def test_avoidance_mission_starts_once_the_node_has_the_first_goal():
+    sim = avoidance_sim()
+    sim.takeoff()
+    sim.upload([wp(10, 0)])
+    sim.command('mission', options={'avoidance': True})
+    assert sim.state() == 'STARTING'
+    for _ in range(10):                        # 10 Hz scans while STARTING
+        sim.run(0.1)
+        sim.scan()
+        if sim.state() == 'MISSION':
+            break
+    assert sim.state() == 'MISSION' and sim.acks[-1]['result'] == 'accepted'
+    assert abs(sim.goal[0] - 10.0) < 0.1
+
+
+def test_avoidance_setpoint_ignored_while_turning_in_place():
+    sim = avoidance_sim()
+    sim.takeoff()
+    sim.upload([wp(0, 10)])                    # due east: 90 deg turn first
+    sim.command('mission', options={'avoidance': True})
+    sim.run(0.1)
+    sim.scan()
+    sim.run(0.05)
+    assert sim.state() == 'MISSION'
+    step = sim.node.plan_runner.current_step
+    assert step.turning
+    start = list(sim.pos)
+    for _ in range(5):
+        sim.run(0.1)
+        sim.scan()
+    assert step.turning and math.hypot(sim.pos[0] - start[0], sim.pos[1] - start[1]) < 0.05
+
+
+def test_hover_keeps_distance_from_a_close_obstacle():
+    from custom_msgs.msg import AvoidanceStatus
+    sim = avoidance_sim()
+    sim.node.hover_keep_distance = 2.0
+    sim.takeoff()
+    start = list(sim.pos)
+
+    def obstacle(dist):
+        st = AvoidanceStatus()
+        st.state, st.scan_period = AvoidanceStatus.CLEAR, 0.1
+        st.min_distance, st.min_distance_bearing = dist, 0.0      # obstacle due north
+        sim.node.avoidance_status_callback(st)
+
+    for _ in range(20):                       # person 1 m north of the drone for 2 s
+        obstacle(1.0 + (start[0] - sim.pos[0]))
+        sim.run(0.1)
+    assert sim.pos[0] < start[0] - 0.5 and abs(sim.pos[1] - start[1]) < 0.05    # moved south
+    assert any('moving away' in t for t in sim.texts)
+    for _ in range(100):                      # obstacle follows: drift stops at hover_max_drift
+        obstacle(1.0)
+        sim.run(0.1)
+    assert abs(math.hypot(sim.pos[0] - start[0], sim.pos[1] - start[1]) - 3.0) < 0.2
+
+
+def test_hover_keep_distance_is_off_by_default():
+    from custom_msgs.msg import AvoidanceStatus
+    sim = avoidance_sim()
+    sim.takeoff()
+    start = list(sim.pos)
+    for _ in range(20):
+        st = AvoidanceStatus()
+        st.state, st.scan_period, st.min_distance = AvoidanceStatus.CLEAR, 0.1, 0.8
+        sim.node.avoidance_status_callback(st)
+        sim.run(0.1)
+    assert math.hypot(sim.pos[0] - start[0], sim.pos[1] - start[1]) < 0.05

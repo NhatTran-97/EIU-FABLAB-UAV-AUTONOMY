@@ -152,6 +152,10 @@ While flying to a waypoint the nose points at it (`yaw_mode: waypoint`), turning
 
 Without avoidance, legs between waypoints are flown at the mission speed (`cruise_speed` unless the ground station sets one, also during the mission): the target is a carrot that moves along the leg at that speed and waits when the drone lags behind, so PX4 never receives a far-away setpoint. PX4's own limits (`MPC_XY_VEL_MAX`, `MPC_Z_VEL_MAX_UP/DN`) remain the hard ceiling, and they also apply to take-off and vertical moves.
 
+### Keep distance while hovering
+
+With `hover_keep_distance > 0` (and `allow_avoidance`, with the avoidance node running), HOVER also enables the avoidance node and sends the hover point as its goal. When the reported `min_distance` is below `hover_keep_distance`, the hover point moves straight away from the nearest obstacle (`min_distance_bearing + 180°`) at `hover_retreat_speed`, at most `hover_max_drift` from where HOVER began. The drone stays where it ends up and does not return when the obstacle leaves. A stale or STALE status keeps the hover point. Only the nearest obstacle is known, so an obstacle behind the drone is not checked; the drift limit bounds the risk.
+
 ## 4. offboard_control
 
 ### Flight lifecycle

@@ -47,6 +47,7 @@ Values set in `launch/px4_offboard.launch.py`; every other parameter keeps its d
 | | `yaw_rate_deg` | `45` deg/s | maximum commanded turn rate |
 | | `turn_first_deg` | `10` deg | at each waypoint, a larger heading error makes the drone turn in place before moving |
 | | `allow_avoidance` | `false` | safety switch: missions asking for obstacle avoidance are refused while false |
+| | `hover_keep_distance` | `0.0` m | while hovering, an obstacle closer than this moves the drone away (0.5 m/s, at most `hover_max_drift` 3 m); needs `allow_avoidance` and the avoidance node; 0 = off |
 | | `marker_topic` | `/marker_localizer_node/marker_rel` | marker offset (PointStamped, ENU) for pick tasks |
 | | `payload_service` | `/payload/hook` | `std_srvs/Trigger` server for the automatic hook |
 | offboard_control | `setpoint_rate_hz` | `10.0` Hz | setpoint stream rate (PX4 needs > 2 Hz) |
