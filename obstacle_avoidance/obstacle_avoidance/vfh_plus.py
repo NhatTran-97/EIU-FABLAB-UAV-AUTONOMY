@@ -1,31 +1,27 @@
-"""VFH+ (Ulrich & Borenstein, 1998) cho multirotor voi lidar 2D 360 do.
+"""VFH+ (Ulrich & Borenstein, 1998) for a multirotor with a 360-degree 2D lidar.
 
-Thuan numpy, khong import rclpy. Moi goc la goc NED: 0 = Bac, duong = theo
-chieu kim dong ho, huong (cos a, sin a) = (north, east).
+Pure numpy, no rclpy. All angles are NED: 0 = north, positive clockwise; direction (cos a, sin a) =
+(north, east).
 
-Khac voi VFH+ goc (viet cho xe):
-  - Bo "masked polar histogram" theo ban kinh quay: multirotor bay ngang duoc
-    moi huong.
-  - Histogram luu KHOANG CACH chu khong luu do lon m = a - b*d. Voi m tuyen
-    tinh va lay max theo sector thi hai cach tuong duong, nhung nguong dat
-    bang met (block_distance) de chinh hon nguong tau khong co don vi, va khong
-    phu thuoc do phan giai lidar.
+Differences from the original VFH+ (written for wheeled robots):
+  - No masked polar histogram based on the turning radius: a multirotor can move sideways in any direction.
+  - The histogram stores DISTANCES instead of magnitudes m = a - b*d. With a linear m and the maximum per
+    sector both are equivalent, but a threshold in metres (block_distance) is easier to tune than a unitless
+    one and does not depend on the lidar resolution.
 
-Cac buoc:
-  1. Polar histogram: moi diem o khoang cach d duoc phong to thanh non
-     +-gamma, gamma = asin((drone_radius + safety_margin) / d).
-     clearance[k] = khoang cach nho nhat cua diem co non phu sector k.
-  2. Binary histogram co hysteresis: bi chan khi clearance < block_distance,
-     da bi chan thi chi mo lai khi clearance > free_distance.
-  3. Valley = day sector trong lien tiep. Valley hep -> ung vien o giua.
-     Valley rong -> 2 ung vien cach mep wide_valley_sectors/2, cong huong goal
-     neu sector goal trong.
-  4. Cost g = mu_goal*D(c, goal) + mu_motion*D(c, huong van toc)
-            + mu_prev*D(c, huong chon lan truoc), chon g nho nhat.
-     Giu mu_goal > mu_motion + mu_prev thi khi huong goal trong, no LUON thang
-     (bat dang thuc tam giac) -> khong di vong khi khong can.
+Steps:
+  1. Polar histogram: each point at distance d is enlarged to a cone of +-gamma,
+     gamma = asin((drone_radius + safety_margin) / d).
+     clearance[k] = smallest distance of a point whose cone covers sector k.
+  2. Binary histogram with hysteresis: blocked when clearance < block_distance; a blocked sector opens again
+     only when clearance > free_distance.
+  3. Valley = run of consecutive free sectors. Narrow valley -> one candidate in the middle. Wide valley ->
+     two candidates wide_valley_sectors/2 from the edges, plus the goal direction if its sector is free.
+  4. Cost g = mu_goal*D(c, goal) + mu_motion*D(c, velocity direction) + mu_prev*D(c, previous direction);
+     the lowest g wins. With mu_goal > mu_motion + mu_prev the goal direction ALWAYS wins when it is free
+     (triangle inequality), so the drone never detours without need.
 
-Toc do KHONG tinh o day: xem motion_limits.py (theo quang dung + do tre do duoc).
+Speed is NOT computed here: see motion_limits.py (stopping distance with the measured latency).
 """
 import math
 from dataclasses import dataclass
@@ -45,45 +41,45 @@ def wrap_pi(a):
 
 
 def angle_diff(a, b):
-    """|a - b| tren vong tron, trong [0, pi]."""
+    """|a - b| on the circle, in [0, pi]."""
     return np.abs(wrap_pi(np.asarray(a) - np.asarray(b)))
 
 
 @dataclass
 class VfhParams:
     sector_deg: float = 5.0
-    window_radius: float = 8.0      # m, chi xet vat can trong ban kinh nay
-    drone_radius: float = 0.5       # m, ban kinh drone tinh ca canh quat
-    safety_margin: float = 1.0      # m, khoang dem them quanh drone
-    block_distance: float = 3.0     # m, sector bi chan khi clearance < muc nay
-    free_distance: float = 3.5      # m, sector da chan chi mo lai khi > muc nay
-    wide_valley_sectors: int = 8    # valley rong hon muc nay la valley rong
-    min_valley_sectors: int = 1     # valley hep hon muc nay bi bo qua
+    window_radius: float = 8.0      # m, only obstacles within this radius are considered
+    drone_radius: float = 0.5       # m, drone radius including the propellers
+    safety_margin: float = 1.0      # m, extra clearance around the drone
+    block_distance: float = 3.0     # m, a sector is blocked when its clearance is below this
+    free_distance: float = 3.5      # m, a blocked sector opens again only above this
+    wide_valley_sectors: int = 8    # valleys wider than this are wide valleys
+    min_valley_sectors: int = 1     # valleys narrower than this are ignored
     mu_goal: float = 5.0
     mu_motion: float = 2.0
     mu_prev: float = 2.0
 
     def validate(self) -> None:
         if not 0.0 < self.sector_deg <= 45.0 or (360.0 / self.sector_deg) % 1.0 > 1e-6:
-            raise ValueError('sector_deg phai chia het 360 va trong (0, 45]')
+            raise ValueError('sector_deg must divide 360 and be in (0, 45]')
         if not (self.drone_radius + self.safety_margin
                 < self.block_distance <= self.free_distance <= self.window_radius):
-            raise ValueError('can: drone_radius + safety_margin < block_distance'
+            raise ValueError('required: drone_radius + safety_margin < block_distance'
                              ' <= free_distance <= window_radius')
         if self.mu_goal <= self.mu_motion + self.mu_prev:
-            raise ValueError('can mu_goal > mu_motion + mu_prev')
+            raise ValueError('required: mu_goal > mu_motion + mu_prev')
 
 
 @dataclass
 class VfhResult:
     state: int                    # CLEAR / AVOIDING / BLOCKED
-    direction: Optional[float]    # huong bay (rad NED), None neu BLOCKED
+    direction: Optional[float]    # flight direction (rad NED), None when BLOCKED
     goal_bearing: float
-    clearance_ahead: float        # clearance theo huong bay (m), 0 neu BLOCKED
-    min_distance: float           # vat can gan nhat (m), inf neu khong co
+    clearance_ahead: float        # clearance along the flight direction (m), 0 when BLOCKED
+    min_distance: float           # nearest obstacle (m), inf if none
     min_bearing: float
-    clearance: np.ndarray         # (S,) clearance tung sector
-    blocked: np.ndarray           # (S,) binary histogram sau hysteresis
+    clearance: np.ndarray         # (S,) clearance of each sector
+    blocked: np.ndarray           # (S,) binary histogram after hysteresis
 
 
 class VfhPlus:
@@ -96,7 +92,7 @@ class VfhPlus:
         self.reset()
 
     def reset(self) -> None:
-        """Goi khi bat lai avoidance: xoa hysteresis va huong cu."""
+        """Call when avoidance is enabled again: clears the hysteresis and the previous direction."""
         self._prev_blocked = None
         self._prev_direction = None
 
@@ -105,7 +101,7 @@ class VfhPlus:
 
     # ------------------------------------------------------------------ #
     def clearance_histogram(self, points_ne: np.ndarray) -> np.ndarray:
-        """Buoc 1: clearance[k] (m) sau khi phong to vat can."""
+        """Step 1: clearance[k] (m) after enlarging the obstacles."""
         clearance = np.full(self.n_sectors, np.inf)
         if points_ne.size == 0:
             return clearance
@@ -117,19 +113,19 @@ class VfhPlus:
         beta = np.arctan2(points_ne[keep, 1], points_ne[keep, 0])
         r_rs = self.p.drone_radius + self.p.safety_margin
         gamma = np.arcsin(np.clip(r_rs / np.maximum(d, 1e-6), 0.0, 1.0))
-        # Sector [c - a/2, c + a/2] giao non [beta - gamma, beta + gamma]
+        # Sector [c - a/2, c + a/2] intersects the cone [beta - gamma, beta + gamma]
         covered = angle_diff(self.centers[None, :], beta[:, None]) \
             <= gamma[:, None] + self.alpha / 2.0
         return np.where(covered, d[:, None], np.inf).min(axis=0)
 
     def _valleys(self, free: np.ndarray):
-        """Cac day sector trong lien tiep (vong tron): list (start, length)."""
+        """Runs of consecutive free sectors (circular): list of (start, length)."""
         S = free.size
         if free.all():
             return [(0, S)]
         if not free.any():
             return []
-        shift = int(np.argmax(~free))          # xoay de index 0 la sector bi chan
+        shift = int(np.argmax(~free))          # rotate so that index 0 is a blocked sector
         rolled = np.roll(free, -shift)
         valleys, i = [], 0
         while i < S:
@@ -150,7 +146,7 @@ class VfhPlus:
         s_max = self.p.wide_valley_sectors
         for start, length in self._valleys(free):
             if length == self.n_sectors:
-                continue                          # toan bo trong: chi can goal
+                continue                          # everything free: the goal is enough
             if length < self.p.min_valley_sectors:
                 continue
             if length <= s_max:
@@ -171,8 +167,8 @@ class VfhPlus:
     # ------------------------------------------------------------------ #
     def plan(self, points_ne: np.ndarray, goal_ne, motion_heading: Optional[float] = None
              ) -> VfhResult:
-        """points_ne: (M, 2) vat can lech so voi drone. goal_ne: (dn, de) goal lech so voi drone.
-        motion_heading: huong van toc ngang (rad NED) hoac None khi gan nhu dung yen."""
+        """points_ne: (M, 2) obstacles relative to the drone. goal_ne: (dn, de) goal relative to the drone.
+        motion_heading: horizontal velocity direction (rad NED), or None when nearly stationary."""
         p = self.p
         points_ne = np.asarray(points_ne, dtype=float).reshape(-1, 2)
         goal_bearing = math.atan2(goal_ne[1], goal_ne[0])
@@ -193,7 +189,7 @@ class VfhPlus:
             blocked |= self._prev_blocked & (clearance < p.free_distance)
         self._prev_blocked = blocked.copy()
 
-        # Goal nam truoc vat can (vd goal sat tuong) thi van toi duoc.
+        # A goal in front of the obstacle (e.g. next to a wall) can still be reached.
         k_goal = self.sector_of(goal_bearing)
         goal_free = (not blocked[k_goal]) or \
             (goal_dist + p.drone_radius <= clearance[k_goal])

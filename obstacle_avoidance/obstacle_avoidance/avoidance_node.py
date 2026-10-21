@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""ROS wrapper cho VFH+: /scan + pose PX4 + goal -> /avoidance/status.
+"""ROS wrapper for VFH+: /scan + PX4 pose + goal -> /avoidance/status.
 
-Node nay KHONG publish setpoint cho offboard_control. No chi de xuat
-(AvoidanceStatus.safe_setpoint), mission_manager quyet dinh co dung hay khong.
+This node does NOT publish setpoints for offboard_control. It only proposes one
+(AvoidanceStatus.safe_setpoint); mission_manager decides whether to use it.
 
     /scan                              (sensor_msgs/LaserScan)  ┐
     /fmu/out/vehicle_local_position_v1 (px4_msgs)               ├─> /avoidance/status
     /fmu/out/vehicle_attitude          (px4_msgs)               │   (custom_msgs/AvoidanceStatus)
     /mission/goal                      (geometry_msgs/Point)    │
     /avoidance/enable                  (std_msgs/Bool)          ┘
-                                                     (tuy chon) -> /fmu/in/obstacle_distance
+                                                     (optional) -> /fmu/in/obstacle_distance
 
-Khong hardcode tan so:
-  - Moi input co RateMonitor do chu ky that; timeout = timeout_periods * chu ky
-    (kep boi max_timeout).
-  - Do tre scan -> status duoc do moi lan (header.stamp cua LaserScan la thoi
-    diem tia DAU tien). Tong do tre + actuation_latency cho ra toc do con dung
-    kip (motion_limits.py): lidar cham / tre hon -> tu bay cham lai.
-  - Carrot = toc do / MPC_XY_P, nen PX4 bay dung toc do da tinh.
+No hardcoded rates:
+  - Each input has a RateMonitor that measures its real period; timeout = timeout_periods * period
+    (capped by max_timeout).
+  - The scan -> status latency is measured on every scan (LaserScan header.stamp is the time of the
+    FIRST beam). Total latency + actuation_latency gives the speed that can still stop in time
+    (motion_limits.py): a slower or more delayed lidar makes the drone slow down on its own.
+  - Carrot = speed / MPC_XY_P, so PX4 flies at the computed speed.
 """
 import math
 
@@ -32,7 +32,7 @@ from std_msgs.msg import Bool
 from px4_msgs.msg import ObstacleDistance, VehicleAttitude, VehicleLocalPosition
 from custom_msgs.msg import AvoidanceStatus
 
-from obstacle_avoidance.motion_limits import stopping_distance, stopping_speed
+from obstacle_avoidance.motion_limits import safe_speed, stopping_distance, stopping_speed
 from obstacle_avoidance.scan_processing import ScanConfig, process_scan
 from obstacle_avoidance.timing import RateMonitor, RecentStats
 from obstacle_avoidance.vfh_plus import BLOCKED, CLEAR, VfhParams, VfhPlus
@@ -40,13 +40,13 @@ from obstacle_avoidance.vfh_plus import BLOCKED, CLEAR, VfhParams, VfhPlus
 STATE_NAMES = {AvoidanceStatus.CLEAR: 'CLEAR', AvoidanceStatus.AVOIDING: 'AVOIDING',
                AvoidanceStatus.BLOCKED: 'BLOCKED', AvoidanceStatus.STALE: 'STALE'}
 
-# |now - header.stamp| lon hon muc nay thi coi nhu lidar chay dong ho khac
-# (vd driver dung thoi gian noi bo) chu khong phai du lieu tre that.
+# |now - header.stamp| above this means the lidar uses another clock (e.g. the driver's internal time),
+# not that the data is really that old.
 CLOCK_MISMATCH_SEC = 10.0
 
 
 def parse_arcs_deg(text: str):
-    """"135:225, 350:10" -> [(a, b), ...] (rad). Chuoi rong -> []."""
+    """"135:225, 350:10" -> [(a, b), ...] (rad). Empty string -> []."""
     arcs = []
     for part in text.replace(';', ',').split(','):
         part = part.strip()
@@ -70,33 +70,33 @@ class ObstacleAvoidanceNode(Node):
         self.declare_parameter('status_topic', '/avoidance/status')
         self.declare_parameter('obstacle_distance_topic', '/fmu/in/obstacle_distance')
 
-        # ---------------- Lidar / loc scan
+        # ---------------- Lidar / scan filtering
         self.declare_parameter('lidar_yaw_offset_deg', 0.0)
         self.declare_parameter('lidar_upside_down', False)
         self.declare_parameter('min_range', 0.3)
         self.declare_parameter('max_range', 12.0)
-        self.declare_parameter('self_mask_deg', '')      # vd "135:225, 300:310"
+        self.declare_parameter('self_mask_deg', '')      # e.g. "135:225, 300:310"
         self.declare_parameter('despeckle_tol', 0.3)
         self.declare_parameter('ground_filter', True)
         self.declare_parameter('ground_margin', 0.3)
-        self.declare_parameter('ground_z', 0.0)           # z NED cua mat dat khi khong co dist_bottom
+        self.declare_parameter('ground_z', 0.0)           # NED z of the ground when dist_bottom is missing
 
         # ---------------- VFH+
         defaults = VfhParams()
         for name in VfhParams.__dataclass_fields__:
             self.declare_parameter(name, getattr(defaults, name))
 
-        # ---------------- Dong luc hoc: hang so vat ly, ROS khong do duoc
+        # ---------------- Dynamics: physical constants that ROS cannot measure
         self.declare_parameter('max_speed', 2.0)          # m/s, <= MPC_XY_VEL_MAX
         self.declare_parameter('max_decel', 2.0)          # m/s^2, <= MPC_ACC_HOR
         self.declare_parameter('px4_xy_p', 0.95)          # = MPC_XY_P
-        self.declare_parameter('actuation_latency', 0.15) # s, status -> PX4 bat dau phanh
+        self.declare_parameter('actuation_latency', 0.15) # s, status -> PX4 starts braking
         self.declare_parameter('motion_speed_threshold', 0.3)
 
-        # ---------------- Timing: chi co he so, tan so do luc chay
-        self.declare_parameter('timeout_periods', 3.0)    # timeout = N * chu ky do duoc
-        self.declare_parameter('max_timeout', 1.0)        # s, mu lau hon muc nay luon la STALE
-        self.declare_parameter('diagnostics_period', 5.0) # s, chu ky log tan so / do tre
+        # ---------------- Timing: only factors; rates are measured at runtime
+        self.declare_parameter('timeout_periods', 3.0)    # timeout = N * measured period
+        self.declare_parameter('max_timeout', 1.0)        # s, blind for longer than this is always STALE
+        self.declare_parameter('diagnostics_period', 5.0) # s, period of the rate / latency log
 
         self.declare_parameter('start_enabled', False)
         self.declare_parameter('publish_obstacle_distance', False)
@@ -120,7 +120,7 @@ class ObstacleAvoidanceNode(Node):
             for name in VfhParams.__dataclass_fields__})
         self.planner = VfhPlus(self.vfh)
         self.r_rs = self.vfh.drone_radius + self.vfh.safety_margin
-        # Vat can o ngoai tam nay chua thay duoc -> phai dung kip trong tam nay.
+        # Obstacles beyond this range are not seen yet -> the drone must be able to stop within it.
         self.sensing_horizon = min(self.vfh.window_radius, self.scan_cfg.max_range) - self.r_rs
 
         self.max_speed = float(gp('max_speed'))
@@ -129,7 +129,7 @@ class ObstacleAvoidanceNode(Node):
         self.actuation_latency = float(gp('actuation_latency'))
         self.motion_speed_threshold = float(gp('motion_speed_threshold'))
         if min(self.max_speed, self.max_decel, self.px4_xy_p) <= 0.0:
-            raise ValueError('max_speed, max_decel, px4_xy_p phai > 0')
+            raise ValueError('max_speed, max_decel, px4_xy_p must be > 0')
 
         periods = float(gp('timeout_periods'))
         self.max_timeout = float(gp('max_timeout'))
@@ -143,7 +143,7 @@ class ObstacleAvoidanceNode(Node):
         self.enabled = bool(gp('start_enabled'))
         self.publish_obstacle_distance = bool(gp('publish_obstacle_distance'))
 
-        # ---------------- QoS: giong offboard_control.py
+        # ---------------- QoS: same as offboard_control.py
         px4_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL,
                              history=HistoryPolicy.KEEP_LAST, depth=1)
@@ -169,8 +169,8 @@ class ObstacleAvoidanceNode(Node):
         self.last_state = None
         self.last_speed_limit = math.nan
 
-        # Watchdog chi can bat duoc /scan ngung han (planner chay theo callback scan).
-        # Chu ky = max_timeout/10 -> phat hien tre them toi da 10% max_timeout.
+        # The watchdog only has to catch /scan stopping (the planner runs in the scan callback).
+        # Period = max_timeout/10 -> detection is late by at most 10 % of max_timeout.
         self.create_timer(self.max_timeout / 10.0, self.watchdog_callback)
         self.create_timer(float(gp('diagnostics_period')), self.diagnostics_callback)
 
@@ -229,7 +229,7 @@ class ObstacleAvoidanceNode(Node):
 
     # ------------------------------------------------------------------ #
     def latency_estimate(self) -> float:
-        """p90 do tre scan -> status. Chua co mau: gia dinh xau nhat = max_timeout."""
+        """p90 scan -> status latency. Without samples: worst case = max_timeout."""
         p90 = self.latency_stats.p90()
         return self.max_timeout if p90 is None else p90
 
@@ -244,27 +244,23 @@ class ObstacleAvoidanceNode(Node):
             self.stamp_trusted = trusted
             if not trusted:
                 self.get_logger().warning(
-                    f'LaserScan header.stamp lech dong ho node {age:.1f}s -> '
-                    f'uoc luong do tre = chu ky scan + thoi gian xu ly')
-        if not trusted:
-            # Lidar quay: tia dau tien da cu ~1 chu ky khi driver publish ca vong.
-            age = (self.scan_rate.period() or self.max_timeout) + (now - t_callback)
-        self.latency_stats.add(age)
+                    f'LaserScan header.stamp differs from the node clock by {age:.1f}s -> '
+                    f'latency estimated as scan period + processing time')
+        # Spinning lidar: when the driver publishes a full turn, the first beam is already >= 1 period old.
+        # This lower bound covers drivers that stamp at the END of the turn (one period short) or use
+        # another clock.
+        floor = (self.scan_rate.period() or self.max_timeout) + (now - t_callback)
+        self.latency_stats.add(max(age, floor) if trusted else floor)
 
-    def speed_limit(self, res, motion_heading) -> float:
-        """Toc do lon nhat con dung kip truoc bong bong an toan theo moi huong lien quan."""
+    def speed_limit(self, res, points_ne) -> float:
+        """Speed that can still stop in time (motion_limits.safe_speed) with the measured latency."""
         if res.state == BLOCKED:
             return 0.0
-        T = self.total_latency()
-        a = self.max_decel
-        v = min(self.max_speed,
-                stopping_speed(self.sensing_horizon, T, a),
-                stopping_speed(res.clearance_ahead - self.r_rs, T, a))
-        if motion_heading is not None:
-            # Quan tinh: van dang lao theo huong cu trong luc doi huong.
-            ahead_of_motion = float(res.clearance[self.planner.sector_of(motion_heading)])
-            v = min(v, stopping_speed(ahead_of_motion - self.r_rs, T, a))
-        return v
+        lp = self.local_position
+        velocity = (float(lp.vx), float(lp.vy)) if lp.v_xy_valid else None
+        return safe_speed(points_ne, res.direction, velocity, self.r_rs,
+                          self.sensing_horizon, self.total_latency(),
+                          self.max_decel, self.max_speed)
 
     # ------------------------------------------------------------------ #
     def watchdog_callback(self) -> None:
@@ -280,7 +276,7 @@ class ObstacleAvoidanceNode(Node):
         self.scan_rate.set_hint(msg.scan_time)
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         if self.attitude_q is None:
-            return      # chua co attitude thi khong doi he duoc; watchdog se bao STALE
+            return      # no attitude yet: the frame cannot be converted; the watchdog reports STALE
 
         processed = process_scan(msg.ranges, msg.angle_min, msg.angle_increment,
                                  msg.range_min, msg.range_max,
@@ -310,7 +306,7 @@ class ObstacleAvoidanceNode(Node):
             motion_heading = math.atan2(lp.vy, lp.vx)
 
         res = self.planner.plan(processed.points_ne, goal_ne, motion_heading)
-        speed = self.speed_limit(res, motion_heading)
+        speed = self.speed_limit(res, processed.points_ne)
         self.last_speed_limit = speed
 
         sp = Point()
@@ -318,7 +314,7 @@ class ObstacleAvoidanceNode(Node):
         if res.state == BLOCKED:
             sp.x, sp.y = float(lp.x), float(lp.y)
         else:
-            # PX4: van toc ngang ~ MPC_XY_P * sai so vi tri -> carrot = v / MPC_XY_P
+            # PX4: horizontal velocity ~ MPC_XY_P * position error -> carrot = v / MPC_XY_P
             step = speed / self.px4_xy_p
             if res.state == CLEAR and math.hypot(*goal_ne) <= step:
                 sp.x, sp.y = float(goal.x), float(goal.y)
@@ -374,7 +370,7 @@ class ObstacleAvoidanceNode(Node):
 
     # ------------------------------------------------------------------ #
     def diagnostics_callback(self) -> None:
-        """Log tan so / do tre do duoc va toc do chung cho phep."""
+        """Log the measured rates and latency and the resulting allowed speeds."""
         def hz(m):
             return f'{m.rate():.1f}Hz(to {m.timeout() * 1000:.0f}ms)' if m.period() else 'n/a'
 
@@ -393,17 +389,17 @@ class ObstacleAvoidanceNode(Node):
                         ('vehicle_attitude', self.attitude_rate)):
             if m.saturated():
                 self.get_logger().warning(
-                    f'{name} {m.rate():.1f}Hz qua cham: {m.periods:.0f} chu ky > max_timeout '
-                    f'{self.max_timeout:.2f}s -> se hay bao STALE')
+                    f'{name} {m.rate():.1f}Hz too slow: {m.periods:.0f} periods > max_timeout '
+                    f'{self.max_timeout:.2f}s -> frequent STALE expected')
         if v_open < self.max_speed - 1e-3:
             self.get_logger().warning(
-                f'max_speed {self.max_speed:.1f}m/s khong dung kip trong tam nhin '
-                f'{self.sensing_horizon:.1f}m voi do tre {T * 1000:.0f}ms -> gioi han '
-                f'{v_open:.2f}m/s (quang dung o max_speed = '
+                f'max_speed {self.max_speed:.1f}m/s cannot stop within the sensing range '
+                f'{self.sensing_horizon:.1f}m with latency {T * 1000:.0f}ms -> limited to '
+                f'{v_open:.2f}m/s (stopping distance at max_speed = '
                 f'{stopping_distance(self.max_speed, T, self.max_decel):.1f}m)')
 
     def publish_px4_obstacle_distance(self, processed) -> None:
-        """72 o x 5 do, o 0 = Bac, don vi cm -- cho PX4 Collision Prevention (CP_DIST)."""
+        """72 bins x 5 degrees, bin 0 = north, in cm -- for PX4 Collision Prevention (CP_DIST)."""
         n_bins, inc = 72, 5.0
         min_cm = int(self.scan_cfg.min_range * 100.0)
         max_cm = int(self.scan_cfg.max_range * 100.0)
@@ -411,9 +407,9 @@ class ObstacleAvoidanceNode(Node):
         def bins_of(bearings):
             return np.round(np.degrees(np.mod(bearings, 2.0 * math.pi)) / inc).astype(int) % n_bins
 
-        out = np.full(n_bins, 65535, dtype=np.int64)          # UINT16_MAX = khong biet
+        out = np.full(n_bins, 65535, dtype=np.int64)          # UINT16_MAX = unknown
         if processed.free_bearings.size:
-            out[bins_of(processed.free_bearings)] = max_cm + 1  # max+1 = khong co vat can
+            out[bins_of(processed.free_bearings)] = max_cm + 1  # max+1 = no obstacle
         pts = processed.points_ne
         if pts.shape[0]:
             d_cm = np.clip(np.hypot(pts[:, 0], pts[:, 1]) * 100.0, min_cm, max_cm).astype(np.int64)

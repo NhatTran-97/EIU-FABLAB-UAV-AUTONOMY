@@ -1,18 +1,17 @@
-"""Loc LaserScan va dua diem lidar ve he local NED (lech so voi drone).
+"""Filter a LaserScan and convert the lidar points to the local NED frame (relative to the drone).
 
-Thuan numpy, khong import rclpy -> test duoc khong can ROS.
+Pure numpy, no rclpy, so it can be tested without ROS.
 
-Chuoi he toa do cua mot tia co goc theta (REP-103, nguoc chieu kim dong ho):
+Frame chain of a beam at angle theta (REP-103, counter-clockwise):
 
-    lidar (z len)  --lat neu lap up-->  FLU  --(x, -y, -z)-->  FRD  --R(q)-->  NED
+    lidar (z up)  --flip if mounted upside down-->  FLU  --(x, -y, -z)-->  FRD  --R(q)-->  NED
 
-    - lidar_yaw_offset: goc cua truc x lidar so voi mui drone, trong FLU
-      (duong = quay sang trai).
-    - upside_down: lidar lap up (z xuong) thi y bi dao -> theta doi dau.
-    - q: VehicleAttitude.q cua PX4, quaternion [w, x, y, z] FRD -> NED.
+    - lidar_yaw_offset: angle of the lidar x axis relative to the drone nose, in FLU (positive = to the left).
+    - upside_down: a lidar mounted upside down (z down) mirrors y, so theta changes sign.
+    - q: PX4 VehicleAttitude.q, quaternion [w, x, y, z] FRD -> NED.
 
-Dung ca quaternion (chu khong chi heading) nen khi drone nghieng, diem van dung
-vi tri ngang, va biet duoc tia nao dang cham mat dat.
+The full quaternion (not only the heading) is used, so points keep their horizontal position when the
+drone tilts, and beams that hit the ground can be detected.
 """
 import math
 from dataclasses import dataclass, field
@@ -24,23 +23,23 @@ import numpy as np
 class ScanConfig:
     lidar_yaw_offset: float = 0.0     # rad
     upside_down: bool = False
-    min_range: float = 0.3            # m, bo diem gan hon (canh quat, chan)
-    max_range: float = 12.0           # m, bo diem xa hon
-    # Cac cung goc bi than drone che, trong he LIDAR (goc tho cua /scan), rad.
-    # Moi phan tu (a, b): che tu a quay nguoc chieu kim dong ho toi b.
+    min_range: float = 0.3            # m, closer points are dropped (propellers, legs)
+    max_range: float = 12.0           # m, farther points are dropped
+    # Arcs hidden by the drone body, in the LIDAR frame (raw /scan angles), rad.
+    # Each entry (a, b) masks from a counter-clockwise to b.
     self_mask: list = field(default_factory=list)
-    # Tia chi duoc giu neu co it nhat 1 tia ke ben lech < despeckle_tol (m).
-    # Loai nhieu 1 tia (bui, hat mua). 0 = tat.
+    # A beam is kept only if at least one neighbour differs by less than despeckle_tol (m).
+    # Removes single-beam noise (dust, rain drops). 0 = off.
     despeckle_tol: float = 0.3
-    # Diem co do cao "xuong" >= agl - ground_margin coi la mat dat va bi bo.
+    # Points whose "down" offset is >= agl - ground_margin are ground and are dropped.
     ground_margin: float = 0.3        # m
 
 
 @dataclass
 class ProcessedScan:
-    points_ne: np.ndarray      # (M, 2) vat can: [north, east] lech so voi drone (m)
-    free_bearings: np.ndarray  # (K,) huong NED cua cac tia khong cham vat can nao
-    ground_hits: int           # so tia bi loai vi cham dat
+    points_ne: np.ndarray      # (M, 2) obstacles: [north, east] relative to the drone (m)
+    free_bearings: np.ndarray  # (K,) NED directions of beams that hit no obstacle
+    ground_hits: int           # number of beams dropped because they hit the ground
 
 
 def wrap_pi(a):
@@ -48,11 +47,11 @@ def wrap_pi(a):
 
 
 def quat_to_rotmat(q_wxyz) -> np.ndarray:
-    """Quaternion Hamilton [w, x, y, z] -> ma tran quay (body -> world)."""
+    """Hamilton quaternion [w, x, y, z] -> rotation matrix (body -> world)."""
     w, x, y, z = (float(v) for v in q_wxyz)
     n = math.sqrt(w * w + x * x + y * y + z * z)
     if n < 1e-9:
-        raise ValueError('quaternion co do dai bang 0')
+        raise ValueError('quaternion has zero length')
     w, x, y, z = w / n, x / n, y / n, z / n
     return np.array([
         [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
@@ -62,19 +61,19 @@ def quat_to_rotmat(q_wxyz) -> np.ndarray:
 
 
 def yaw_to_quat(yaw: float):
-    """Quaternion [w, x, y, z] chi co yaw (NED) -- tien cho test va mo phong."""
+    """Yaw-only quaternion [w, x, y, z] (NED), for tests and simulation."""
     return (math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0))
 
 
 def beam_directions_frd(angles, lidar_yaw_offset=0.0, upside_down=False) -> np.ndarray:
-    """Goc tia trong he lidar -> vector don vi trong he body FRD, shape (N, 3)."""
+    """Beam angles in the lidar frame -> unit vectors in the body FRD frame, shape (N, 3)."""
     angles = np.asarray(angles, dtype=float)
-    phi = (-angles if upside_down else angles) + lidar_yaw_offset   # goc trong FLU
+    phi = (-angles if upside_down else angles) + lidar_yaw_offset   # angle in FLU
     return np.stack([np.cos(phi), -np.sin(phi), np.zeros_like(phi)], axis=1)
 
 
 def angle_mask(angles, arcs) -> np.ndarray:
-    """True voi goc nam trong mot trong cac cung (a, b) (nguoc chieu kim dong ho a -> b)."""
+    """True for angles inside one of the arcs (a, b) (counter-clockwise from a to b)."""
     angles = np.asarray(angles, dtype=float)
     masked = np.zeros(angles.shape, dtype=bool)
     two_pi = 2.0 * math.pi
@@ -85,7 +84,7 @@ def angle_mask(angles, arcs) -> np.ndarray:
 
 
 def despeckle(ranges, tol) -> np.ndarray:
-    """True voi tia co it nhat mot tia ke ben (vong tron) gan bang no."""
+    """True for beams with at least one neighbour (circular) of nearly the same range."""
     r = np.asarray(ranges, dtype=float)
     if tol <= 0.0 or r.size < 3:
         return np.ones(r.shape, dtype=bool)
@@ -97,9 +96,9 @@ def despeckle(ranges, tol) -> np.ndarray:
 
 def process_scan(ranges, angle_min, angle_increment, range_min, range_max,
                  q_wxyz, agl, cfg: ScanConfig) -> ProcessedScan:
-    """LaserScan -> diem vat can trong he NED (lech so voi drone).
+    """LaserScan -> obstacle points in the NED frame (relative to the drone).
 
-    agl: do cao so voi mat dat (m, duong). None = khong loc mat dat.
+    agl: height above ground (m, positive). None = no ground filter.
     """
     r = np.asarray(ranges, dtype=float)
     angles = angle_min + angle_increment * np.arange(r.size)
@@ -109,8 +108,8 @@ def process_scan(ranges, angle_min, angle_increment, range_min, range_max,
 
     usable = ~angle_mask(angles, cfg.self_mask)
     with np.errstate(invalid='ignore'):
-        # Tia "trong": inf hoac vuot range_max -> khong co gi tren huong nay.
-        # NaN va gia tri < range_min (nhieu driver tra 0) la "khong biet" -> bo.
+        # "Free" beam: inf or beyond range_max -> nothing in that direction.
+        # NaN and values below range_min (many drivers report 0) are "unknown" -> dropped.
         no_return = usable & (np.isposinf(r) | (r > hi))
         hit = usable & np.isfinite(r) & (r >= lo) & (r <= hi)
     hit &= despeckle(r, cfg.despeckle_tol)

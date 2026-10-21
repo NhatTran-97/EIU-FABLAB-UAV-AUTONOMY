@@ -1,7 +1,7 @@
-"""Kiem tra doi he lidar -> NED bang so.
+"""Numerical checks of the lidar -> NED frame conversion.
 
-Sai he toa do la loi bay thu gan nhu khong phat hien duoc: drone ne SANG
-PHIA vat can. Test o day thuan numpy, khong can ROS.
+A wrong frame is a flight-test error that is almost impossible to spot: the drone dodges TOWARDS the
+obstacle. These tests are pure numpy and need no ROS.
 
     colcon test --packages-select obstacle_avoidance
 """
@@ -19,7 +19,7 @@ INC = math.radians(1.0)
 
 
 def make_scan(hits):
-    """hits: {goc_do: range}. Cac tia khac = inf (khong cham gi)."""
+    """hits: {angle_deg: range}. Other beams = inf (no hit)."""
     r = np.full(N_BEAMS, np.inf)
     for deg, rng in hits.items():
         r[int(round(deg + 180)) % N_BEAMS] = rng
@@ -47,11 +47,11 @@ def test_rotmat_is_proper_rotation():
 
 
 @pytest.mark.parametrize('beam_deg, heading_deg, expected_ne', [
-    (0.0, 0.0, (5.0, 0.0)),      # truoc mui, mui huong Bac     -> Bac
-    (0.0, 90.0, (0.0, 5.0)),     # truoc mui, mui huong Dong    -> Dong
-    (90.0, 0.0, (0.0, -5.0)),    # tia +90 (ben TRAI, REP-103)  -> Tay
-    (-90.0, 0.0, (0.0, 5.0)),    # tia -90 (ben phai)           -> Dong
-    (90.0, 90.0, (5.0, 0.0)),    # ben trai khi mui huong Dong  -> Bac
+    (0.0, 0.0, (5.0, 0.0)),      # ahead, nose north           -> north
+    (0.0, 90.0, (0.0, 5.0)),     # ahead, nose east            -> east
+    (90.0, 0.0, (0.0, -5.0)),    # beam +90 (LEFT, REP-103)    -> west
+    (-90.0, 0.0, (0.0, 5.0)),    # beam -90 (right)            -> east
+    (90.0, 90.0, (5.0, 0.0)),    # left with the nose east     -> north
 ])
 def test_beam_to_ned(beam_deg, heading_deg, expected_ne):
     res = run({beam_deg: 5.0}, q=yaw_to_quat(math.radians(heading_deg)))
@@ -60,11 +60,11 @@ def test_beam_to_ned(beam_deg, heading_deg, expected_ne):
 
 def test_upside_down_lidar_mirrors_left_right():
     res = run({90.0: 5.0}, upside_down=True)
-    assert only_point(res) == pytest.approx((0.0, 5.0), abs=1e-9)   # tia +90 thanh ben phai
+    assert only_point(res) == pytest.approx((0.0, 5.0), abs=1e-9)   # beam +90 becomes right
 
 
 def test_mount_yaw_offset():
-    # Truc x lidar quay 90 do sang trai: tia 0 cua lidar nhin sang trai drone.
+    # Lidar x axis turned 90 degrees left: lidar beam 0 looks to the left of the drone.
     res = run({0.0: 5.0}, lidar_yaw_offset=math.radians(90.0))
     assert only_point(res) == pytest.approx((0.0, -5.0), abs=1e-9)
 
@@ -75,7 +75,7 @@ def test_tilted_beam_uses_horizontal_distance():
 
 
 def test_ground_hit_is_removed_when_low():
-    # Chui mui 20 do o 1.5m: tia truoc mui cham dat o ~1.71m phia duoi.
+    # Nose down 20 degrees at 1.5 m: the forward beam hits the ground ~1.71 m ahead.
     res = run({0.0: 5.0}, q=pitch_quat(math.radians(-20.0)), agl=1.5)
     assert res.points_ne.shape == (0, 2)
     assert res.ground_hits == 1
@@ -94,8 +94,8 @@ def test_self_mask_wraps_through_180():
 
 
 def test_despeckle_drops_single_beam_noise_but_keeps_objects():
-    hits = {10.0: 4.0}                                   # nhieu 1 tia
-    hits.update({d: 6.0 for d in (-2.0, -1.0, 0.0, 1.0, 2.0)})   # vat that 5 tia
+    hits = {10.0: 4.0}                                   # single-beam noise
+    hits.update({d: 6.0 for d in (-2.0, -1.0, 0.0, 1.0, 2.0)})   # real object, 5 beams
     res = run(hits, despeckle_tol=0.3)
     assert res.points_ne.shape[0] == 5
     assert np.hypot(res.points_ne[:, 0], res.points_ne[:, 1]) == pytest.approx(np.full(5, 6.0))

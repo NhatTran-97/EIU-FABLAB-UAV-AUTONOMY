@@ -1,13 +1,13 @@
-"""Do tan so va do tre luc chay -- thuan python, khong import rclpy.
+"""Rate and latency measured at runtime -- pure Python, no rclpy.
 
-Khong hardcode tan so cua lidar / PX4: moi timeout suy ra tu chu ky DO DUOC.
+Lidar and PX4 rates are not hardcoded: every timeout is derived from the MEASURED period.
 """
 import math
 from collections import deque
 
 
 def percentile(values, q):
-    """Phan vi q (0..1) theo kieu nearest-rank. values rong -> None."""
+    """Nearest-rank percentile q (0..1). Empty values -> None."""
     if not values:
         return None
     s = sorted(values)
@@ -15,20 +15,20 @@ def percentile(values, q):
 
 
 class RateMonitor:
-    """Chu ky den cua mot luong message va timeout suy ra tu no.
+    """Arrival period of a message stream and the timeout derived from it.
 
-    timeout = periods * p90(chu ky), kep trong (0, max_timeout].
-    Dung p90 chu khong dung trung binh: jitter binh thuong khong gay STALE gia,
-    con mot lan rot message le te khong keo timeout len.
+    timeout = periods * p90(period), clamped to (0, max_timeout].
+    p90 rather than the mean: normal jitter does not cause a false STALE, and a single dropped message
+    does not inflate the timeout.
 
-    max_timeout la gioi han cung "mu bao lau thi chap nhan duoc". Nguon cham
-    toi muc periods * chu ky > max_timeout thi saturated() = True -> nen canh bao.
+    max_timeout is the hard limit on how long being blind is acceptable. A source so slow that
+    periods * period > max_timeout makes saturated() True, which should be reported.
     """
 
     def __init__(self, periods: float = 3.0, max_timeout: float = 1.0,
                  window: int = 20, min_samples: int = 5) -> None:
         if periods <= 1.0:
-            raise ValueError('periods phai > 1')
+            raise ValueError('periods must be > 1')
         self.periods = periods
         self.max_timeout = max_timeout
         self.min_samples = min_samples
@@ -42,7 +42,7 @@ class RateMonitor:
         self.last = t
 
     def set_hint(self, period: float) -> None:
-        """Chu ky nguon tu khai bao (vd LaserScan.scan_time), dung khi chua du mau."""
+        """Period declared by the source (e.g. LaserScan.scan_time), used until there are enough samples."""
         self.hint = period if period and period > 0.0 else None
 
     def period(self):
@@ -72,7 +72,7 @@ class RateMonitor:
 
 
 class RecentStats:
-    """N mau gan nhat cua mot dai luong (vd do tre), lay p90 de uoc luong than trong."""
+    """Last N samples of a quantity (e.g. latency); p90 gives a conservative estimate."""
 
     def __init__(self, window: int = 20) -> None:
         self.values = deque(maxlen=window)

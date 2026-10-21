@@ -3,15 +3,19 @@
 <package format="3">
   <name>obstacle_avoidance</name>
   <version>0.0.0</version>
-  <description>Ne vat can bang VFH+ tu lidar 2D 360 do (/scan) cho drone PX4, de xuat setpoint cho mission_manager</description>
+  <description>VFH+ obstacle avoidance from a 360-degree 2D lidar (/scan) for a PX4 drone; proposes setpoints to mission_manager</description>
   <maintainer email="nhat.tranduy1997@gmail.com">duynhat</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>
 
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>px4_msgs</exec_depend>

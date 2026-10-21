@@ -1,71 +1,101 @@
 # obstacle_avoidance
 
-Né vật cản bằng **VFH+** từ lidar 2D 360° (`/scan`) cho drone PX4. Node **chỉ đề xuất**
-setpoint (`/avoidance/status`). `mission_manager` quyết định có dùng hay không, và là node
-duy nhất publish `/mission/target_position`.
+Obstacle avoidance for a PX4 drone with a 360° 2D lidar. The node runs VFH+ on every scan and **proposes** a safe setpoint on `/avoidance/status`. It never commands PX4: `mission_manager` decides whether to use the setpoint and stays the only node that writes `/mission/target_position`.
 
 ```
-/scan ─────────────────────────────┐
-/fmu/out/vehicle_local_position_v1 ┤                      /avoidance/status
-/fmu/out/vehicle_attitude ─────────┼─► avoidance_node ──────────────────────► mission_manager ─► /mission/target_position ─► offboard_control
-/mission/goal  ◄───────────────────┤                                               │
-/avoidance/enable ◄────────────────┘◄──────────────────────────────────────────────┘
-                     (tùy chọn) ──► /fmu/in/obstacle_distance  (PX4 Collision Prevention)
+/scan, PX4 pose + attitude ──► obstacle_avoidance ──/avoidance/status──► mission_manager ──► offboard_control ──► PX4
+                                       ▲                                       │
+                                       └──── /mission/goal, /avoidance/enable ─┘
 ```
 
-| File | Vai trò |
-|---|---|
-| `vfh_plus.py` | Thuật toán VFH+ thuần numpy (histogram, hysteresis, valley, cost) |
-| `scan_processing.py` | Lọc scan, đổi hệ lidar → FLU → FRD → NED bằng quaternion, lọc tia chạm đất |
-| `avoidance_node.py` | ROS wrapper, timeout/STALE, tính carrot, ObstacleDistance |
-| `custom_msgs/msg/AvoidanceStatus.msg` | `CLEAR / AVOIDING / BLOCKED / STALE` + `safe_setpoint` |
+The package also contains the driver for the STL-50B2 lidar (`stl_50b2_node`, C++), which publishes `/scan`.
 
-## Build, test, chạy
+More detail:
+- **[docs/BEHAVIOR.md](docs/BEHAVIOR.md)**: what the drone does when someone stands in its way, when it is boxed in, and while hovering.
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: modules, the VFH+ steps, speed limits, timing and the interface with `mission_manager`.
+
+## Features
+
+| Feature | Where | Default |
+|---|---|---|
+| Avoidance during mission legs: the drone goes around obstacles on the way to each waypoint | Start mission with ☑ Obstacle avoidance on the ground station | off (`allow_avoidance: false` in `mission_manager`) |
+| Speed limited by the stopping distance, from the measured lidar latency | `obstacle_avoidance` | always on while avoiding |
+| Hold when boxed in, stuck, or without fresh lidar data; then hold for the pilot or land | `mission_manager` (`blocked_action`) | `hold` |
+| Keep distance while hovering: an obstacle closer than X m moves the drone away | `mission_manager` (`hover_keep_distance`) | off (`0.0`) |
+| PX4 Collision Prevention: stops the pilot from flying into obstacles in Position mode | `publish_obstacle_distance` + PX4 `CP_DIST` | off |
+
+## Build
 
 ```bash
-conda deactivate                       # colcon cần catkin_pkg của python hệ thống
+conda deactivate                       # colcon needs the system Python with catkin_pkg
+cd ~/drone_ws
 colcon build --packages-select custom_msgs obstacle_avoidance offboard_control
 source install/setup.bash
-colcon test --packages-select obstacle_avoidance && colcon test-result --verbose
+```
 
-ros2 launch obstacle_avoidance avoidance_launch.py
-ros2 run offboard_control mission_manager.py
-ros2 topic echo /avoidance/status
+## Use
+
+**1. Start the lidar and the avoidance node** on the Jetson:
+
+```bash
+ros2 launch obstacle_avoidance stl_50b2.launch.py      # lidar -> /scan
+ros2 launch obstacle_avoidance avoidance_launch.py     # VFH+ -> /avoidance/status
+```
+
+**2. Allow avoidance in `mission_manager`** (`offboard_control/launch/px4_offboard.launch.py`):
+
+```python
+'allow_avoidance': True,
+'hover_keep_distance': 2.0,    # optional: keep 2 m away from obstacles while hovering; 0 = off
+```
+
+**3. Fly:** Take-off, Send WP, then Start mission with ☑ Obstacle avoidance. Without the tick the mission flies straight lines and the lidar is not used.
+
+**4. Watch it work:**
+
+```bash
+ros2 topic echo /avoidance/status      # state, safe_setpoint, min_distance, speed_limit
 ros2 topic echo /mission/nav_mode      # NOMINAL / AVOIDING / HOLDING
 ```
 
-## Hành vi của mission_manager
+Every `diagnostics_period` seconds the node logs a `[diag]` line with the measured rate of each input, the latency, and the speeds it allows (`v_open` in free space, `v@block` at `block_distance`).
 
-| `/avoidance/status` | Manager |
-|---|---|
-| CLEAR / AVOIDING | bay theo `safe_setpoint` (carrot cách vị trí hiện tại `lookahead × speed_scale`) |
-| BLOCKED, STALE, hoặc không nhận được status > `avoidance_timeout` | **HOLD** tại vị trí chốt lúc bắt đầu hold |
-| Khoảng cách tới goal không giảm `stuck_min_progress` trong `stuck_timeout` | **HOLD** (bẫy chữ U: VFH+ dao động mà không báo BLOCKED) |
-| HOLD quá `blocked_timeout` | `blocked_action`: `hold` (pilot lấy lái) hoặc `land` |
+**Optional, PX4 Collision Prevention:** set `publish_obstacle_distance: true` in `config/avoidance.yaml`, then set `CP_DIST` (for example 1.5 m) in QGroundControl. PX4 then refuses to let the pilot fly into an obstacle in Position mode. It does not push the drone away, and it has no effect in OFFBOARD.
 
-Avoidance chỉ bật trong MISSION/LANDING_SEARCH (khi bay tới điểm staging). Lúc TAKEOFF và khi
-đã khoá landing mode thì tắt, vì lidar sẽ thấy mặt đất hoặc bãi đáp. Ở tick đầu mỗi lần bật,
-manager HOLD một nhịp do chưa có status. Log `no fresh /avoidance/status` lúc đó là bình thường.
+## Configuration
 
-`avoidance_enabled:=false` sẽ quay về hành vi cũ, bay thẳng tới waypoint.
+Everything is in `config/avoidance.yaml`. The values that must match the hardware:
 
-## Checklist trước khi bay thật
+| Parameter | Current | Must match |
+|---|---|---|
+| `lidar_yaw_offset_deg`, `lidar_upside_down` | `0`, `false` | how the lidar is mounted (here: facing the nose) |
+| `self_mask_deg` | empty | angles hidden by the frame or legs |
+| `max_range` | `12.0` m | the driver's `range_max`; VFH+ only uses points within `window_radius` (8 m) |
+| `drone_radius` | `0.5` m | half the propeller-tip diagonal plus a little margin (80 cm diagonal → 0.4 m) |
+| `px4_xy_p` | `0.95` | PX4 `MPC_XY_P` |
+| `max_decel` | `2.0` m/s² | at most PX4 `MPC_ACC_HOR` |
+| `max_speed` | `2.0` m/s | at most PX4 `MPC_XY_VEL_MAX` |
 
-1. **Test tĩnh chiều đổi hệ** (lỗi nguy hiểm nhất): cầm vật đứng trước mũi drone, rồi
-   `ros2 topic echo /avoidance/status`. Kiểm tra `min_distance_bearing` ≈ heading của drone.
-   Đưa vật sang **trái** thì bearing phải **giảm** 90° (NED quay theo chiều kim đồng hồ). Sai
-   thì chỉnh `lidar_yaw_offset_deg` / `lidar_upside_down`.
-2. `self_mask_deg`: xem `/scan` khi drone đứng yên. Tia nào dính chân/khung thì che lại.
-3. SITL Gazebo có lidar 2D: thử cột, tường, hành lang, chữ U (chữ U phải kết thúc bằng HOLD).
-4. Giới hạn tốc độ: `MPC_XY_VEL_MAX` khoảng 2 m/s khi thử. Tốc độ bay thực tế ≈
-   `MPC_XY_P × lookahead_distance`.
-5. Nếu bật `publish_obstacle_distance`: xác nhận trong PX4 shell `listener obstacle_distance`
-   thấy dữ liệu và timestamp không bị coi là cũ (timestamp đang lấy theo clock ROS, giống
-   `offboard_control.py`), sau đó mới đặt `CP_DIST`.
+The PX4 values are in QGroundControl (Vehicle Setup → Parameters, search the name) or in the MAVLink console (`param show MPC_XY_P`). Rates and timeouts are not configured: the node measures them while running.
 
-## Giới hạn đã biết
+## Tests
 
-- Lidar 2D chỉ thấy vật cản trong mặt phẳng quét. Dây điện, cành cây ở độ cao khác sẽ không thấy.
-- VFH+ là planner phản ứng, không có bản đồ, nên dễ kẹt ở local minimum. Watchdog của manager
-  bắt được trường hợp này nhưng không tự thoát ra. Muốn tự thoát thì cần VFH* hoặc một global planner.
-- Không bù offset tịnh tiến của lidar so với tâm drone. Nếu lệch > 10 cm, hãy cộng phần lệch vào `drone_radius`.
+```bash
+cd ~/drone_ws/src/obstacle_avoidance && python3 -m pytest test/
+```
+
+The tests are pure numpy (no ROS): VFH+ decisions, the lidar → NED conversion, timing, speed limits, and a closed-loop simulation with latency and limited acceleration.
+
+## Before the first real flight
+
+1. **Static frame test** (the most dangerous error): hold an object in front of the nose and echo `/avoidance/status`. `min_distance_bearing` must be close to the drone heading. Move the object to the **left**: the bearing must **decrease** by 90° (NED turns clockwise). Otherwise fix `lidar_yaw_offset_deg` / `lidar_upside_down`.
+2. Look at `/scan` with the drone on the ground and mask the beams that hit the legs or frame (`self_mask_deg`).
+3. SITL with a 2D lidar: a pole, a wall, a corridor and a U-shaped trap. The U trap must end in HOLD.
+4. Check that `px4_xy_p`, `max_decel` and `max_speed` match PX4, and read the `[diag]` line for plausible rates and latency.
+
+## Known limits
+
+- A 2D lidar only sees obstacles in its scan plane. Wires or branches at another height are invisible.
+- VFH+ is reactive and has no map, so it can get stuck in a local minimum. `mission_manager` detects this (no progress for `stuck_timeout`) and holds, but does not find a way out.
+- The lidar offset from the drone centre is not compensated. If it is more than 10 cm, add it to `drone_radius`.
+- The STL-50B2 driver reports `scan_time = 0.15 s`; the node measures the real scan period (7–10 Hz) and uses that.

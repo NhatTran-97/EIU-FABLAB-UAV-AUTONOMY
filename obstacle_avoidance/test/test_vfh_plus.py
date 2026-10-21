@@ -1,4 +1,4 @@
-"""Kiem tra VFH+ bang vat can gia va mo phong vong kin (drone diem).
+"""VFH+ checks with synthetic obstacles and a closed-loop simulation (point drone).
 
     colcon test --packages-select obstacle_avoidance
 """
@@ -7,6 +7,7 @@ import math
 import numpy as np
 import pytest
 
+from obstacle_avoidance.motion_limits import safe_speed
 from obstacle_avoidance.vfh_plus import (AVOIDING, BLOCKED, CLEAR, VfhParams,
                                          VfhPlus, angle_diff)
 
@@ -44,17 +45,17 @@ def test_no_obstacle_goes_straight_to_goal():
     res = VfhPlus(P).plan(np.empty((0, 2)), (10.0, 10.0))
     assert res.state == CLEAR
     assert res.direction == pytest.approx(math.radians(45.0))
-    assert res.speed_scale == 1.0
+    assert res.clearance_ahead == math.inf
 
 
 def test_obstacle_on_the_side_does_not_trigger_avoidance():
-    res = VfhPlus(P).plan(circle((0.0, 3.0), 0.3), (10.0, 0.0))   # cot o phia Dong 3m
+    res = VfhPlus(P).plan(circle((0.0, 3.0), 0.3), (10.0, 0.0))   # pole 3 m east
     assert res.state == CLEAR
     assert res.direction == pytest.approx(0.0)
 
 
 def test_obstacle_ahead_deflects_by_at_least_enlargement_angle():
-    obstacle = segment((2.5, -0.5), (2.5, 0.5))      # vat can rong 1m, cach 2.5m phia Bac
+    obstacle = segment((2.5, -0.5), (2.5, 0.5))      # obstacle 1 m wide, 2.5 m north
     res = VfhPlus(P).plan(obstacle, (10.0, 0.0))
     assert res.state == AVOIDING
     assert angle_diff(res.direction, 0.0) >= math.asin(R_RS / 2.5)
@@ -66,12 +67,11 @@ def test_surrounded_is_blocked():
     res = VfhPlus(P).plan(circle((0.0, 0.0), 1.2, n=360), (10.0, 0.0))
     assert res.state == BLOCKED
     assert res.direction is None
-    assert res.speed_scale == 0.0
 
 
 def test_goal_in_front_of_wall_is_reachable():
     wall = segment((2.5, -5.0), (2.5, 5.0))
-    res = VfhPlus(P).plan(wall, (1.0, 0.0))            # goal 1m, tuong 2.5m
+    res = VfhPlus(P).plan(wall, (1.0, 0.0))            # goal at 1 m, wall at 2.5 m
     assert res.state == CLEAR
     assert res.direction == pytest.approx(0.0)
 
@@ -80,8 +80,8 @@ def test_block_hysteresis():
     v = VfhPlus(P)
     goal = (20.0, 0.0)
     assert v.plan(circle((2.9, 0.0), 0.05), goal).state == AVOIDING      # < block 3.0
-    assert v.plan(circle((3.3, 0.0), 0.05), goal).state == AVOIDING      # < free 3.5: van chan
-    assert v.plan(circle((3.7, 0.0), 0.05), goal).state == CLEAR         # > free: mo lai
+    assert v.plan(circle((3.3, 0.0), 0.05), goal).state == AVOIDING      # < free 3.5: still blocked
+    assert v.plan(circle((3.7, 0.0), 0.05), goal).state == CLEAR         # > free: open again
 
 
 def test_symmetric_obstacle_choice_is_stable():
@@ -93,8 +93,10 @@ def test_symmetric_obstacle_choice_is_stable():
 
 
 # --------------------------------------------------------------------------- #
-# Mo phong vong kin: drone diem bay theo huong VFH+ (giong carrot cua node).
-def fly(obstacles_ne, goal, start=(0.0, 0.0), v_max=1.5, dt=0.1, steps=600, sensor_range=8.0):
+# Closed loop with IDEAL dynamics (commands take effect at once): checks that VFH+ guides the drone to
+# the goal. Safety with latency: see test_closed_loop_dynamics.py.
+def fly(obstacles_ne, goal, start=(0.0, 0.0), v_max=2.0, dt=0.1, steps=600, sensor_range=8.0,
+        latency=0.4, decel=2.0):
     v = VfhPlus(P)
     pos = np.asarray(start, float)
     goal = np.asarray(goal, float)
@@ -110,7 +112,9 @@ def fly(obstacles_ne, goal, start=(0.0, 0.0), v_max=1.5, dt=0.1, steps=600, sens
         res = v.plan(rel, to_goal, heading)
         if res.state == BLOCKED:
             return False, closest
-        step = min(v_max * res.speed_scale * dt, float(np.hypot(*to_goal)))
+        speed = safe_speed(rel, res.direction, None, R_RS, sensor_range - R_RS,
+                           latency, decel, v_max)
+        step = min(speed * dt, float(np.hypot(*to_goal)))
         pos = pos + step * np.array([math.cos(res.direction), math.sin(res.direction)])
         heading = res.direction
     return False, closest
