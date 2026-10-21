@@ -22,6 +22,9 @@ if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   # Pure Python, no ROS needed.
   ament_add_pytest_test(test_mission_pipeline test/test_mission_pipeline.py)
+  # Real nodes with intercepted publishers; skipped when the ROS messages are not available.
+  ament_add_pytest_test(test_mission_manager_node test/test_mission_manager_node.py)
+  ament_add_pytest_test(test_offboard_control_node test/test_offboard_control_node.py)
 endif()
 
 ament_package()

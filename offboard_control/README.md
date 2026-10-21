@@ -92,6 +92,7 @@ ros2 topic pub --once /gcs/command std_msgs/msg/String '{data: "{\"id\": 2, \"cm
 cd ~/drone_ws/src/offboard_control
 python3 -m pytest test/test_mission_pipeline.py                # pipeline, no ROS
 python3 -m pytest test/test_mission_manager_node.py            # node, needs a sourced ROS 2 workspace
+python3 -m pytest test/test_offboard_control_node.py           # node, needs px4_msgs
 ```
 
 ## Safety

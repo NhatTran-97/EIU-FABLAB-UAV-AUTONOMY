@@ -196,6 +196,7 @@ cd ~/drone_ws/src/offboard_control
 python3 -m pytest test/test_mission_pipeline.py          # no ROS needed
 source /opt/ros/humble/setup.bash && source ~/drone_ws/install/setup.bash
 python3 -m pytest test/test_mission_manager_node.py      # real node, simulated vehicle, isolated DDS domain
+python3 -m pytest test/test_offboard_control_node.py     # warmup, OFFBOARD + ARM, arm timeout, disarm
 ```
 
 The tests cover the default mission, loiter, automatic and manual picks, the fallback to manual when the marker is not found, the Continue button, pilot override and resume, capability refusals, Land during a mission, the speed limit, the arrival tolerances, and settings changed during a mission.

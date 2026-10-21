@@ -39,14 +39,14 @@ from std_msgs.msg import Bool, Float32
 from sensor_msgs.msg import NavSatFix, NavSatStatus
 from px4_msgs.msg import VehicleLandDetected
 from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, \
-                         VehicleControlMode, VehicleLocalPosition, VehicleStatus
+                         VehicleControlMode, VehicleLocalPosition
 
 
 def px4_out_topic(msg_cls, name: str) -> str:
     """Return the /fmu/out topic name matching the message version in px4_msgs.
 
-    Messages with MESSAGE_VERSION > 0 are published with a _v<N> suffix (e.g. vehicle_status_v1 on
-    PX4 1.17, vehicle_status_v4 on 1.18), so deriving the name lets the node run on either firmware.
+    Messages with MESSAGE_VERSION > 0 are published with a _v<N> suffix (e.g. vehicle_local_position_v1),
+    so deriving the name lets the node run on firmware that matches the workspace px4_msgs.
     """
     v = int(getattr(msg_cls, 'MESSAGE_VERSION', 0) or 0)
     return f'/fmu/out/{name}' + (f'_v{v}' if v > 0 else '')
@@ -66,7 +66,7 @@ class OffboardControlNode(Node):
         self.declare_parameter("setpoint_rate_hz", 10.0)
         self.declare_parameter("flight_active", False)
         # Empty: derive the topic name from px4_msgs. Set only to force a specific name.
-        self.declare_parameter("vehicle_status_topic", "")
+        self.declare_parameter("vehicle_status_topic", "")   # unused; kept so old launch files still load
         self.declare_parameter("vehicle_local_position_topic", "")
         self.declare_parameter("vehicle_control_mode_topic", "")
         # Seconds a velocity setpoint stays valid; without a refresh the node holds the current position.
@@ -91,7 +91,7 @@ class OffboardControlNode(Node):
                                       '/mission/start (Take-off from GCS), at the current position')
 
         if self.setpoint_rate_hz <= 0.0:
-            raise ValueError('Parameter "setpoint_rate_hz" > must be  > 0.0')
+            raise ValueError('Parameter "setpoint_rate_hz" must be > 0.0')
 
         self.timer_period = 1.0 / self.setpoint_rate_hz
         # Warmup in timer ticks, derived from seconds so that changing setpoint_rate_hz keeps the same delay.
@@ -118,16 +118,14 @@ class OffboardControlNode(Node):
         # From PX4
         local_position_topic = (str(self.get_parameter('vehicle_local_position_topic').value)
                                 or px4_out_topic(VehicleLocalPosition, 'vehicle_local_position'))
-        status_topic = (str(self.get_parameter('vehicle_status_topic').value)
-                        or px4_out_topic(VehicleStatus, 'vehicle_status'))
         self.vehicle_local_position_sub = self.create_subscription(VehicleLocalPosition, local_position_topic,
                                                                    self.vehicle_local_position_callback, px4_qos)
 
-        self.vehicle_status_sub = self.create_subscription(VehicleStatus, status_topic,
-                                                           self.vehicle_status_callback, px4_qos)
         self.land_detected_sub = self.create_subscription(VehicleLandDetected,'/fmu/out/vehicle_land_detected',
                                                         self.vehicle_land_detected_callback, px4_qos)
-        # Armed / OFFBOARD state: vehicle_control_mode has the same message version on PX4 1.17 and 1.18.
+        # Armed and OFFBOARD state come from vehicle_control_mode (MESSAGE_VERSION 0 on PX4 1.17 and 1.18).
+        # vehicle_status is not used: its version differs between firmware and px4_msgs, and a mismatch
+        # means no message arrives, which would disable the arm timeout and the end of flight on disarm.
         control_mode_topic = (str(self.get_parameter('vehicle_control_mode_topic').value)
                               or px4_out_topic(VehicleControlMode, 'vehicle_control_mode'))
         self.control_mode_sub = self.create_subscription(VehicleControlMode, control_mode_topic,
@@ -160,10 +158,9 @@ class OffboardControlNode(Node):
 
         # State
         self.vehicle_local_position = VehicleLocalPosition()
-        self.vehicle_status = VehicleStatus()
 
         self.have_local_position = False
-        self.have_status = False
+        self.have_status = False         # vehicle_control_mode received (arming state known)
         self.was_armed = False           # PX4 has armed during the current flight
         self.arm_request_time = None
         self.land_requested = False
@@ -186,9 +183,10 @@ class OffboardControlNode(Node):
         self.publish_flight_active()
         self.offboard_active_pub.publish(Bool(data=False))
 
-        self.get_logger().info(f'Offboard control node started (PX4 topics: {local_position_topic}, {status_topic})')
-        self.get_logger().info(f'Default target: ({self.target_x:.2f}, {self.target_z:.2f}),'
-                               f'yaw={self.target_yaw:.2f}, setpoint_rate_hz={self.setpoint_rate_hz:.2f}')
+        self.get_logger().info(f'Offboard control node started (PX4 topics: {local_position_topic}, '
+                               f'{control_mode_topic})')
+        self.get_logger().info(f'setpoint_rate_hz={self.setpoint_rate_hz:.1f}, warmup {self.warmup_ticks} ticks, '
+                               f'arm_timeout_s={self.arm_timeout_s:.1f}')
 
     # ---- PX4 callbacks -------------------------------------------------------------------------
 
@@ -221,17 +219,15 @@ class OffboardControlNode(Node):
         current_position_msg.z = float(msg.z)
         self.current_position_pub.publish(current_position_msg)
 
-    def vehicle_status_callback(self, msg: VehicleStatus) -> None:
+    def update_armed(self, armed: bool) -> None:
         """Track the arming state and end the flight when PX4 disarms after having armed.
 
         A disarm can come from a completed landing, the kill switch, a failsafe, or the pilot / GCS; the
         flight is over regardless of whether this node sent the LAND command.
         """
-        self.vehicle_status = msg
         self.have_status = True
         if not self.flight_active:
             return
-        armed = msg.arming_state == VehicleStatus.ARMING_STATE_ARMED
         if armed:
             self.was_armed = True
         elif self.was_armed:
@@ -248,6 +244,7 @@ class OffboardControlNode(Node):
         Leaving OFFBOARD during a flight means the pilot or the ground station took over. From then on the
         setpoint follows the current position, so returning to OFFBOARD does not move the drone.
         """
+        self.update_armed(bool(msg.flag_armed))
         active = bool(msg.flag_control_offboard_enabled)
         if active == self.offboard_active:
             return
@@ -289,8 +286,8 @@ class OffboardControlNode(Node):
     def target_position_callback(self, msg:Point)->None:
         """Update the target (NED, metres) and send it to PX4 immediately.
 
-        Publishing here instead of waiting for the next timer tick reduces latency for obstacle avoidance;
-        the timer keeps streaming as the OFFBOARD heartbeat.
+        A changed target is published here instead of waiting for the next timer tick, which reduces latency
+        for obstacle avoidance; the timer keeps streaming as the OFFBOARD heartbeat.
         """
         if self.overridden():
             return
@@ -305,10 +302,11 @@ class OffboardControlNode(Node):
             round(self.target_z, 2),
             round(self.target_yaw, 2),
         )
-        if rounded_target != self.last_logged_target:
-            self.get_logger().info(f'Updated target position: '
-                                   f'x={self.target_x:.2f}, y={self.target_y:.2f}, z={self.target_z:.2f}, yaw={self.target_yaw:.2f}')
-            self.last_logged_target = rounded_target
+        if rounded_target == self.last_logged_target:
+            return              # unchanged (mission_manager repeats it every tick): the timer stream is enough
+        self.get_logger().info(f'Updated target position: '
+                               f'x={self.target_x:.2f}, y={self.target_y:.2f}, z={self.target_z:.2f}, yaw={self.target_yaw:.2f}')
+        self.last_logged_target = rounded_target
 
         if self.flight_active and not self.land_command_sent and self.offboard_setpoint_counter > self.warmup_ticks:
             self.publish_trajectory_setpoint()
@@ -324,7 +322,7 @@ class OffboardControlNode(Node):
         if self.overridden():
             return
         self.target_velocity = (float(msg.x), float(msg.y), float(msg.z))
-        self.velocity_time = self.get_clock().now().nanoseconds * 1e-9
+        self.velocity_time = self.now_sec()
         self.setpoint_mode = 'velocity'
         if self.flight_active and self.offboard_active and not self.land_command_sent:
             self.publish_offboard_control_mode()
@@ -409,7 +407,7 @@ class OffboardControlNode(Node):
     # ---- Outputs to PX4 ------------------------------------------------------------------------
 
     def publish_offboard_control_mode(self)->None:
-        """Tell PX4 that only position setpoints are being controlled."""
+        """Tell PX4 which setpoint type is controlled: position or velocity."""
         msg = OffboardControlMode()
         msg.position = self.setpoint_mode == 'position'
         msg.velocity = self.setpoint_mode == 'velocity'
@@ -433,10 +431,10 @@ class OffboardControlNode(Node):
         msg.timestamp = self.get_timestamp_us()
         self.trajectory_setpoint_pub.publish(msg)
 
-    def publish_vehicle_command(self, commnad: int, param1: float=0.0, param2: float=0.0) -> None:
+    def publish_vehicle_command(self, command: int, param1: float=0.0, param2: float=0.0) -> None:
         """Send a VehicleCommand to the autopilot (system 1, component 1)."""
-        msg= VehicleCommand()
-        msg.command = commnad
+        msg = VehicleCommand()
+        msg.command = command
         msg.param1 = param1
         msg.param2 = param2
         msg.target_system = 1
@@ -462,6 +460,10 @@ class OffboardControlNode(Node):
         """Request PX4 to return to launch (RTL)."""
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_RETURN_TO_LAUNCH)
 
+    def now_sec(self) -> float:
+        """Current node time in seconds."""
+        return self.get_clock().now().nanoseconds * 1e-9
+
     def get_timestamp_us(self)->int:
         """Current node time in microseconds (PX4 timestamp format)."""
         return int(self.get_clock().now().nanoseconds / 1000)
@@ -479,7 +481,7 @@ class OffboardControlNode(Node):
         if not self.flight_active:
             return
 
-        now_s = self.get_clock().now().nanoseconds * 1e-9
+        now_s = self.now_sec()
         if self.overridden():
             self.hold_current_position()          # follow the pilot so switching back does not move the drone
         elif (self.setpoint_mode == 'velocity'
@@ -496,13 +498,13 @@ class OffboardControlNode(Node):
                                          param1=1.0, param2=6.0)
             self.get_logger().info('Requesting ARM ...')
             self.arm()
-            self.arm_request_time = self.get_clock().now().nanoseconds * 1e-9
+            self.arm_request_time = now_s
 
         # PX4 has not armed within arm_timeout_s (pre-arm check, RC, kill switch): abort instead of
-        # streaming forever. Checked only when vehicle_status is available, since otherwise the arming
-        # state is unknown.
+        # streaming forever. Checked only when vehicle_control_mode is available, since otherwise the
+        # arming state is unknown.
         if (self.have_status and not self.was_armed and self.arm_request_time is not None
-                and self.get_clock().now().nanoseconds * 1e-9 - self.arm_request_time > self.arm_timeout_s):
+                and now_s - self.arm_request_time > self.arm_timeout_s):
             self.get_logger().error(f'PX4 did not arm within {self.arm_timeout_s:.1f} s '
                                     '(pre-arm check? see PX4 messages) -> abort take-off')
             self.end_flight('Take-off aborted')

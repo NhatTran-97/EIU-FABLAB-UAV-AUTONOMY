@@ -48,7 +48,7 @@ def generate_launch_description():
             'offboard_warmup_s': 1.0,       # s of setpoint streaming before requesting OFFBOARD + ARM
             'arm_timeout_s': 3.0,           # s to wait for PX4 to arm before aborting take-off
             'velocity_timeout_s': 0.5,      # s; velocity setpoints older than this -> hold position
-            # PX4 topic names are derived from px4_msgs (1.17: vehicle_status_v1, SITL 1.18: _v4); set only to override.
+            # PX4 topic names are derived from px4_msgs MESSAGE_VERSION; set *_topic only to override.
         }],
     )
     return LaunchDescription([mission_manager, offboard_control])

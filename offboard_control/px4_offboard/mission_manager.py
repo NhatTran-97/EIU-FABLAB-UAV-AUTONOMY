@@ -853,8 +853,7 @@ class MissionManagerNode(Node):
     def update_goal_hold(self, goal: Point) -> bool:
         """True once the drone has stayed within tolerance of the goal for goal_hold_time."""
         cfg = self.step_cfg
-        ok = (self.xy_distance(goal) < cfg.xy_tolerance
-              and abs(goal.z - self.current_position.z) < cfg.z_tolerance)
+        ok = (self.xy_distance(goal) < cfg.xy_tolerance and abs(goal.z - self.current_position.z) < cfg.z_tolerance)
         if not ok:
             self.goal_hold_start = None
             return False

@@ -28,7 +28,7 @@ flowchart LR
     MM -- "/payload/hook (service)" --> PL
 
     OC -- "/fmu/in/offboard_control_mode<br/>/fmu/in/trajectory_setpoint<br/>/fmu/in/vehicle_command" --> PX4
-    PX4 -- "/fmu/out/vehicle_local_position<br/>/fmu/out/vehicle_status<br/>/fmu/out/vehicle_control_mode<br/>/fmu/out/vehicle_land_detected" --> OC
+    PX4 -- "/fmu/out/vehicle_local_position<br/>/fmu/out/vehicle_control_mode<br/>/fmu/out/vehicle_land_detected" --> OC
 ```
 
 | Node | Decides | Talks to |
@@ -82,11 +82,10 @@ Two rules follow from this split. `offboard_control` is the only node that publi
 | `/fmu/in/trajectory_setpoint` | → PX4 | position (NED) or velocity, and yaw |
 | `/fmu/in/vehicle_command` | → PX4 | DO_SET_MODE OFFBOARD, ARM, NAV_LAND |
 | `/fmu/out/vehicle_local_position[_vN]` | PX4 → | position, validity flags, `dist_bottom`, EKF GPS origin, heading |
-| `/fmu/out/vehicle_status[_vN]` | PX4 → | arming state |
-| `/fmu/out/vehicle_control_mode` | PX4 → | whether OFFBOARD is active |
+| `/fmu/out/vehicle_control_mode` | PX4 → | arming state and whether OFFBOARD is active |
 | `/fmu/out/vehicle_land_detected` | PX4 → | touchdown |
 
-The `_vN` suffix is derived from `MESSAGE_VERSION` in `px4_msgs`, so the nodes work with PX4 1.17 and 1.18 SITL without configuration.
+The `_vN` suffix is derived from `MESSAGE_VERSION` in `px4_msgs`. `vehicle_status` is not used: its version differs between firmware releases and the workspace `px4_msgs`, and with a mismatch no message arrives at all. `vehicle_control_mode` (version 0) carries both the armed flag and the OFFBOARD flag.
 
 ### With optional nodes
 
@@ -180,7 +179,7 @@ These states are implicit in the code (`flight_active`, `offboard_seen`, `offboa
 
 A timer at `setpoint_rate_hz` (10 Hz) publishes `OffboardControlMode` and `TrajectorySetpoint` for as long as a flight is active. PX4 accepts OFFBOARD only after it has seen this stream, which is why the first `offboard_warmup_s` only streams. During the flight the stream is the OFFBOARD heartbeat: if the node hangs or loses DDS, PX4 leaves OFFBOARD and runs its failsafe.
 
-The setpoint is either a position or a velocity, whichever `mission_manager` sent last. Velocity setpoints must be refreshed within `velocity_timeout_s`; otherwise the node switches back to holding the current position.
+The setpoint is either a position or a velocity, whichever `mission_manager` sent last. `mission_manager` repeats the target on every tick; a changed target is sent to PX4 at once, an unchanged one only with the timer stream. Velocity setpoints must be refreshed within `velocity_timeout_s`; otherwise the node switches back to holding the current position.
 
 ### Pilot override
 
