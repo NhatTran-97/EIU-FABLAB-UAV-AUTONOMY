@@ -1,139 +1,103 @@
 # offboard_control
 
-ROS2 C++ node — autonomous flight controller for a PX4 drone via MAVROS.
+Autonomous flight on the Jetson for a PX4 drone, using OFFBOARD mode over uXRCE-DDS (`px4_msgs`). The package contains two Python nodes:
 
-Two independent triggers, kept strictly separate:
+- **`mission_manager`** decides what to fly. It receives commands from the ground station, runs the flight state machine and the mission pipeline, and sends targets.
+- **`offboard_control`** is the only node that talks to PX4. It streams setpoints, requests OFFBOARD and ARM, sends LAND, handles a pilot override and reports the vehicle state back.
 
-- **OFFBOARD** (`/mode_signal`) → arm → takeoff → **hover** → land. Ignores any pending mission.
-- **Mission** (`/mission_path`, while idle) → auto-starts: arm → takeoff → **fly waypoints** → land.
-
-Position setpoints are streamed to PX4 at a stable rate on a dedicated thread.
-
-Architecture details (modules, FSM, threading, safety): **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
-
----
-
-## Role in the system
+The drone never takes off on its own: every flight starts from a ground station command, at the drone's current position.
 
 ```
-Ground GUI ──LoRa──► lora_drone (Python) ──┬─ /mode_signal  (srv) ─► offboard_control ──► MAVROS ──► PX4
-                                            └─ /mission_path (topic)─►
+GCS --433--> drone_telemetry --/gcs/command--> mission_manager --/mission/*--> offboard_control --> PX4
 ```
 
-`offboard_control` is the sole node that talks to MAVROS. `lora_drone` only forwards commands; all flight decisions are made here.
+Diagrams, state machines and interfaces: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. Mission steps, pick tasks and the manual hand-over: **[docs/MISSION_PIPELINE.md](docs/MISSION_PIPELINE.md)**.
 
-The package is split into modules (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §1): the node (`offboard_control`) orchestrates (FSM + ROS + MAVROS calls); `carrot_follower` is the pure waypoint-following geometry (no ROS, unit-testable); `setpoint_streamer` owns the >2 Hz streamer thread; `battery_monitor` is the pure battery sustained-low debounce (no ROS, unit-testable).
+## What it does
 
----
+| Command (from the GCS) | Result |
+|---|---|
+| Take-off *alt* | climbs vertically to *alt* metres at the current position, then hovers |
+| Start mission | flies the uploaded waypoints and their tasks, then hovers at the last waypoint |
+| Start mission + ☑ Obstacle avoidance | the same, with every leg flown through the obstacle_avoidance node |
+| Continue | ends a manual task at a waypoint, or resumes after the pilot took control |
+| Mission speed / tolerance changed | applied at once to the running or paused mission |
+| Land | lands in place; both nodes return to idle on touchdown |
 
-## Build
+Each waypoint can carry a task. **Pick** descends to a search height, finds the ArUco marker, aligns over it and descends to the hook height, then hooks the load automatically (payload node) or hands over to the pilot, and finally climbs back to the waypoint altitude. If the marker is not found or the automatic hook fails, the pilot is asked to take over instead of the mission stopping.
 
-> Build on **Jetson Nano inside Docker** only — not on the laptop (missing MAVROS/PX4 headers).
+If the pilot moves the sticks during a mission, the mission pauses. It resumes from where the drone is when the pilot flips the RC switch back to Offboard or the operator presses Continue.
 
-```bash
-# Inside container:
-cd /home/drone_ws
-colcon build --packages-select offboard_control
-
-# Clean build (after renaming files or targets):
-rm -rf build/offboard_control install/offboard_control
-colcon build --packages-select offboard_control
-```
-
-> The executable is built from multiple source files (`offboard_control.cpp`, `carrot_follower.cpp`, `setpoint_streamer.cpp`, `battery_monitor.cpp`). New modules must be added to `add_executable(...)` in `CMakeLists.txt`.
-
----
-
-## Run
-
-```bash
-# Full stack (MAVROS + offboard_control + lora_drone):
-ros2 launch lora_drone_package bringup.launch.py
-
-# Node only (MAVROS must be running):
-ros2 launch offboard_control offboard_launch.py
-
-# SITL:
-ros2 launch lora_drone_package bringup.launch.py \
-    fcu_url:=udp://:14540@127.0.0.1:14557
-```
-
----
-
-## ROS interfaces
-
-| Direction | Name | Type | Description |
-|---|---|---|---|
-| Service (server) | `/mode_signal` | `custom_msgs/srv/ModeSignal` | OFFBOARD (hover flight) or LAND |
-| Subscribe | `/mission_path` | `nav_msgs/Path` | Waypoint list — auto-starts a mission flight when idle. z = relative to takeoff ground. **VOLATILE QoS** (ignores latched/old missions at startup). |
-| Subscribe | `/mavros/state` | `mavros_msgs/State` | PX4 mode + armed status |
-| Subscribe | `/mavros/local_position/pose` | `geometry_msgs/PoseStamped` | EKF position |
-| Subscribe | `/mavros/global_position/raw/fix` | `sensor_msgs/NavSatFix` | GPS fix — pre-takeoff EKF gate |
-| Subscribe | `/mavros/battery` | `sensor_msgs/BatteryState` | Voltage (safety) |
-| Subscribe | `/mavros/extended_state` | `mavros_msgs/ExtendedState` | Landed/in-air status |
-| Publish | `/mavros/setpoint_position/local` | `geometry_msgs/PoseStamped` | Position setpoint (20 Hz) |
-| Client | `/mavros/cmd/arming` | `mavros_msgs/srv/CommandBool` | Arm / disarm |
-| Client | `/mavros/set_mode` | `mavros_msgs/srv/SetMode` | OFFBOARD / AUTO.LAND |
-
----
+Commands that do not fit the current state, or that need a node that is not running, are refused with a reason.
 
 ## Parameters
 
-| Param | Default | Description |
-|---|---|---|
-| `takeoff_height_` | `5.0` m | Takeoff altitude for an **OFFBOARD hover**. A **mission** instead takes off to its first waypoint's altitude. |
-| `takeoff_delay_sec` | `5.0` s | Setpoint prime time before entering OFFBOARD |
-| `hover_seconds` | `10.0` s | Hover duration when no mission (≤ 0 = hold until LAND command) |
-| `arm_timeout_sec` | `15.0` s | Abort if ARM not achieved within this time |
-| `climb_timeout_sec` | `60.0` s | Emergency land if takeoff altitude not reached within this time after ARM |
-| `alt_reached_tol` | `0.5` m | "Altitude reached" when `z ≥ target − tol` (matches real hover droop; 0.1 m was unreachable) |
-| `ekf_gate_enable` | `true` | Pre-takeoff EKF gate: require GPS 3D fix + stable local-z before ARM. `false` = arm immediately (bench/GPS-denied) |
-| `ekf_z_stable_thresh` | `0.30` m | local-z must hold within ±this of a reference… |
-| `ekf_z_stable_sec` | `3.0` s | …for this long before the EKF is considered settled |
-| `min_battery_` | `13.2` V | Low-battery threshold (3.3 V/cell, 4S) |
-| `low_batt_hold_sec` | `5.0` s | Voltage must stay below threshold for this long before emergency land |
-| `wp_reach_radius` | `1.5` m | Waypoint reached radius |
-| `wp_timeout_sec` | `30.0` s | **Final** waypoint only: land if not reached within this time. Intermediate WPs are never skipped by time (every WP is visited). |
-| `cruise_speed` | `2.0` m/s | Carrot advance speed along the mission path |
-| `carrot_lead` | `2.5` m | Max carrot lead distance ahead of the drone |
-| `setpoint_rate_hz` | `20.0` Hz | Setpoint stream rate (must be > 2 Hz for PX4 OFFBOARD) |
-| `mission_log_file` | `$HOME/mission_debug.log` | Flight event log file |
+Values set in `launch/px4_offboard.launch.py`; every other parameter keeps its default from the node.
 
----
+| Node | Parameter | Value | Meaning |
+|---|---|---|---|
+| mission_manager | `takeoff_altitude` | `-5.0` | NED altitude used when the command has none |
+| | `max_takeoff_altitude` | `15.0` m | higher take-off or waypoint altitudes are rejected; keep below the PX4 geofence `GF_MAX_VER_DIST` |
+| | `start_timeout` | `3.0` s | time for `offboard_control` to start after `/mission/start` |
+| | `position_timeout` | `1.0` s | maximum age of the position for Take-off |
+| | `cruise_speed` | `2.0` m/s | speed between waypoints when the ground station sends none |
+| | `max_cruise_speed` | `5.0` m/s | upper limit for the mission speed chosen on the ground station |
+| | `xy_tolerance`, `z_tolerance` | `0.75`, `0.5` m | arrival tolerances when the ground station sends none (it can set them at start and during the mission) |
+| | `yaw_mode` | `waypoint` | nose towards the next waypoint; `hold` keeps the take-off heading |
+| | `yaw_rate_deg` | `45` deg/s | maximum commanded turn rate |
+| | `turn_first_deg` | `10` deg | at each waypoint, a larger heading error makes the drone turn in place before moving |
+| | `allow_avoidance` | `false` | safety switch: missions asking for obstacle avoidance are refused while false |
+| | `marker_topic` | `/marker_localizer_node/marker_rel` | marker offset (PointStamped, ENU) for pick tasks |
+| | `payload_service` | `/payload/hook` | `std_srvs/Trigger` server for the automatic hook |
+| offboard_control | `setpoint_rate_hz` | `10.0` Hz | setpoint stream rate (PX4 needs > 2 Hz) |
+| | `offboard_warmup_s` | `1.0` s | streaming time before OFFBOARD + ARM |
+| | `arm_timeout_s` | `3.0` s | time for PX4 to arm before the take-off is aborted |
+| | `velocity_timeout_s` | `0.5` s | velocity setpoints older than this fall back to holding position |
 
-## Log format
+Pick heights, tolerances and timeouts are listed in [docs/MISSION_PIPELINE.md](docs/MISSION_PIPELINE.md).
 
-Events are appended to `mission_log_file`:
+### PX4 parameters to check
 
+| Parameter | Why |
+|---|---|
+| `MPC_XY_VEL_MAX`, `MPC_Z_VEL_MAX_UP`, `MPC_Z_VEL_MAX_DN` | hard speed limits, also in OFFBOARD |
+| `COM_RC_OVERRIDE` (offboard bit) | moving the sticks gives control to the pilot immediately |
+| an RC mode-switch position set to Offboard | lets the pilot hand control back after a manual task |
+| `COM_OF_LOSS_T`, `COM_OBL_RC_ACT` | what PX4 does if the setpoint stream stops |
+
+## Build and run
+
+Requires `px4_msgs` (matching the firmware), `custom_msgs`, `std_srvs`, and MicroXRCEAgent connected to PX4. Pick tasks also need a rangefinder in PX4 (`dist_bottom`) and the ArUco localizer.
+
+```bash
+cd ~/drone_ws && colcon build --packages-select offboard_control
+source install/setup.bash
+ros2 launch offboard_control px4_offboard.launch.py
 ```
-MISSION_RX: received 5 waypoints
-EKF gate WAIT: z settling 1.2/3.0s (z=0.05 ref=0.04 drift=0.01m)
-EKF gate passed (GPS 3D fix + stable local-z z=0.05m) -> proceeding to takeoff
-ARMED
-CLIMB: z=2.10/6.00 (gap=3.90m) mode=OFFBOARD armed=1 t=4/60s
-ALTITUDE reached -> deciding mission vs hover
-DECISION: FLY MISSION (5 waypoints)
-MISSION WP1/5: drone(1.2,3.4,6.0) carrot(2.1,4.0,6.0) dist=0.95 mode=OFFBOARD
-WP 1/5 reached -> next
-MISSION COMPLETE at WP5 -> landing
-LANDED & disarmed -> idle
+
+`drone_telemetry` must run with `commands.takeoff_land_via: mission` to forward ground station commands. `launch/offboard_launch.py` is kept as a legacy name and simply includes `px4_offboard.launch.py`.
+
+Quick test without the ground station (propellers removed):
+
+```bash
+ros2 topic pub --once /gcs/command std_msgs/msg/String '{data: "{\"id\": 1, \"cmd\": \"takeoff\", \"alt\": 2.0}"}'
+ros2 topic echo /gcs/command_ack
+ros2 topic echo /mission/state
+ros2 topic pub --once /gcs/command std_msgs/msg/String '{data: "{\"id\": 2, \"cmd\": \"land\"}"}'
 ```
 
-The `CLIMB:`/`MISSION:` lines are throttled (~2 s); their `mode=` column makes an external
-override (e.g. `POSCTL`) obvious. `EKF gate WAIT:` lines show why takeoff is being held (GPS vs z).
+## Tests
 
-The launch file sets `mission_log_file` to `/home/drone_ws/mission_debug.log` (Docker bind-mount → visible on host and laptop via sshfs).
-
----
+```bash
+cd ~/drone_ws/src/offboard_control
+python3 -m pytest test/test_mission_pipeline.py                # pipeline, no ROS
+python3 -m pytest test/test_mission_manager_node.py            # node, needs a sourced ROS 2 workspace
+```
 
 ## Safety
 
-- **EKF gate (pre-takeoff):** won't ARM until a fresh GPS 3D fix + stable local-z (`ekf_z_stable_thresh` for `ekf_z_stable_sec`). Prevents the "arm before EKF converges → never reaches altitude → land" failure. Latched so it never re-trips mid-flight. Disable with `ekf_gate_enable:=false`.
-- **Altitude timeout:** no altitude reached within `climb_timeout_sec` (60 s) after ARM → emergency land. "Reached" = within `alt_reached_tol` (0.5 m) of target.
-- **Low battery (debounced):** voltage < `min_battery_` for ≥ `low_batt_hold_sec` continuously → emergency land. Transient sag on takeoff does not trigger.
-- **Stale FCU / pose:** setpoint stream stops; PX4 exits OFFBOARD automatically.
-- **External override:** PX4 leaves OFFBOARD for > 3 s → ABORT → MANUAL.
-
----
-
-*Last updated: 2026-06-11*
+- Nothing flies on startup; every flight starts from an explicit command at the current position.
+- Take-off needs a valid, fresh EKF position; GPS missions need the EKF GPS origin.
+- If the setpoint stream stops, PX4 leaves OFFBOARD and applies its failsafe.
+- The RC transmitter always has priority: moving the sticks pauses the mission, the kill switch ends the flight.
+- Pick tasks fly close to the ground: test them in SITL first, then with the propellers removed.

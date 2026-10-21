@@ -1,400 +1,254 @@
 # offboard_control — Architecture
 
-Autonomous flight controller for a PX4 drone via MAVROS: state machine, control loop, mission flight, and safety. The node `OffboardMode` orchestrates; the geometry and the setpoint thread live in their own modules.
+This document describes how the two Python nodes of the package, `mission_manager` and `offboard_control`, are built and how they talk to each other, to the ground station and to PX4. Usage and parameters are in the [README](../README.md). The mission pipeline (steps, plan compilation, pick tasks, manual hand-over) is described in detail in [MISSION_PIPELINE.md](MISSION_PIPELINE.md).
 
-Scope: this C++ package only. For the full pipeline (Ground GUI ↔ LoRa ↔ lora_drone), see `lora_drone_package/README.md`.
-
----
-
-## Table of contents
-
-1. [Module layout](#1-module-layout)
-2. [Triggers — OFFBOARD vs Mission](#2-triggers--offboard-vs-mission)
-3. [State machine](#3-state-machine)
-4. [Control loop](#4-control-loop)
-5. [Setpoint streamer (module)](#5-setpoint-streamer-module)
-6. [Mission flight — carrot follower (module)](#6-mission-flight--carrot-follower-module)
-7. [Coordinate system](#7-coordinate-system)
-8. [Safety mechanisms](#8-safety-mechanisms)
-9. [Threading model](#9-threading-model)
-10. [Module API reference](#10-module-api-reference)
-11. [Extending & reusing](#11-extending--reusing)
-12. [Roadmap](#12-roadmap)
-
----
-
-## 1. Module layout
-
-The package is split so each concern is isolated and (where possible) testable on its own:
-
-| File | Role | ROS deps? |
-|---|---|---|
-| `offboard_control.{hpp,cpp}` | Node: ROS wiring + FSM orchestration | yes |
-| `carrot_follower.{hpp,cpp}` | Pure waypoint-following geometry (Module 1) | **no** — unit-testable |
-| `setpoint_streamer.{hpp,cpp}` | Dedicated >2 Hz setpoint thread + RT priority (Module 2) | yes (wraps a publisher) |
-| `battery_monitor.{hpp,cpp}` | Pure battery sustained-low debounce (Module 3) | **no** — unit-testable |
-
-### Component & data-flow diagram
-
-How the node, the three modules, and MAVROS/PX4 wire together. Left = inputs the node reacts
-to; centre = the node (FSM) + the modules it delegates to; right = commands out to the vehicle.
+## 1. Place in the system
 
 ```mermaid
 flowchart LR
-    subgraph GND["Ground  (LoRa → lora_drone)"]
-        MS["/mode_signal\n(OFFBOARD / LAND)"]
-        MP["/mission_path\n(waypoints)"]
-    end
+    GCS["Ground station<br/>(EIU Drone GCS)"]
+    TEL["drone_telemetry"]
+    MM["mission_manager"]
+    OC["offboard_control"]
+    OA["obstacle_avoidance<br/>(optional)"]
+    AR["ArUco localizer"]
+    PL["payload node<br/>(optional)"]
+    PX4["PX4<br/>(uXRCE-DDS)"]
 
-    subgraph TEL["MAVROS telemetry  (subscriptions)"]
-        T1["/mavros/state"]
-        T2["/mavros/local_position/pose"]
-        T3["/mavros/global_position/raw/fix"]
-        T4["/mavros/battery"]
-        T5["/mavros/extended_state"]
-    end
+    GCS -- "radio 433 (MAVLink)" --> TEL
+    TEL -- "/gcs/command<br/>/gcs/mission" --> MM
+    MM -- "/gcs/command_ack<br/>/mission/status_text<br/>/mission/progress" --> TEL
 
-    subgraph NODE["offboard_control node"]
-        OMS["on_mode_signal()"]
-        MCB["mission_cb()\nmission_wps_ (mutex)"]
-        subgraph CTL["control_loop()  50 ms  — FSM dispatcher §4"]
-            FSM["link_ready → ekf_ready\n→ capture_takeoff\n→ drive_and_stream\n→ check_* → run_mission"]
-        end
-        CF["CarrotFollower\n(geometry · pure)"]
-        BM["BatteryMonitor\n(debounce · pure)"]
-        SS["SetpointStreamer\n(20 Hz · own thread)"]
-    end
+    MM -- "/mission/start · /mission/land · /mission/resume<br/>/mission/target_position · /mission/target_velocity<br/>/mission/target_yaw" --> OC
+    OC -- "/mission/current_position · /mission/agl · /mission/heading<br/>/mission/flight_active · /mission/offboard_active<br/>/mission/geo_reference" --> MM
 
-    subgraph FCU["MAVROS ↔ PX4  (FCU)"]
-        ARM["/mavros/cmd/arming\narm_vehicle()"]
-        MODE["/mavros/set_mode\nOFFBOARD / MANUAL / AUTO.LAND"]
-        SP["/mavros/setpoint_position/local\n20 Hz"]
-    end
+    MM -- "/mission/goal<br/>/avoidance/enable" --> OA
+    OA -- "/avoidance/status" --> MM
+    AR -- "marker offset" --> MM
+    MM -- "/payload/hook (service)" --> PL
 
-    LOG[("mission_debug.log\nSTATE / EKF / CLIMB\nMISSION / WP lines")]
-
-    MS -->|"srv"| OMS
-    MP -->|"sub · VOLATILE QoS"| MCB
-    T1 & T2 & T3 & T4 & T5 --> FSM
-    OMS --> CTL
-    MCB --> CTL
-    CTL -->|"geometry"| CF
-    CTL -->|"voltage sample"| BM
-    CTL -->|"arm / set_mode / land"| ARM & MODE
-    CTL -->|"set_target()"| SS
-    SS -->|"publish 20 Hz"| SP
-    NODE -. "log_event()" .-> LOG
+    OC -- "/fmu/in/offboard_control_mode<br/>/fmu/in/trajectory_setpoint<br/>/fmu/in/vehicle_command" --> PX4
+    PX4 -- "/fmu/out/vehicle_local_position<br/>/fmu/out/vehicle_status<br/>/fmu/out/vehicle_control_mode<br/>/fmu/out/vehicle_land_detected" --> OC
 ```
 
-- **Inputs (left):** ground commands over `/mode_signal` + `/mission_path`; live FCU telemetry from MAVROS (state, pose, GPS fix, battery, landed-state).
-- **Node (centre):** the 50 ms `control_loop` FSM dispatcher (§4) decides phase and delegates — *geometry* to `CarrotFollower`, *battery debounce* to `BatteryMonitor`, *the setpoint heartbeat* to `SetpointStreamer` (its own 20 Hz thread).
-- **Outputs (right):** arm/disarm, set_mode (OFFBOARD/MANUAL/AUTO.LAND), and the position setpoint stream — all to MAVROS → PX4.
-
-MAVROS arm/set_mode/land stays in the node (a `VehicleIO` wrapper was considered and **skipped** — §10.4).
-
-The node keeps the FSM (`state_`, `transition_to`, `control_loop` dispatcher), ROS plumbing, and the MAVROS command calls; it delegates geometry to `CarrotFollower`, the streaming thread to `SetpointStreamer`, and the battery debounce to `BatteryMonitor`.
-
-CMake builds all source files together into the single `offboard_control` executable — add new `.cpp` files to `add_executable(...)` in `CMakeLists.txt`.
-
----
-
-## 2. Triggers — OFFBOARD vs Mission
-
-The two ground commands map to two distinct flights, kept strictly separate by the `mission_intent_` flag:
-
-| Trigger | Effect | `mission_intent_` |
+| Node | Decides | Talks to |
 |---|---|---|
-| **OFFBOARD** (`/mode_signal`) | arm → takeoff → **hover** → land. Ignores any mission in the inbox. | false |
-| **Mission** (`/mission_path`, while idle) | auto-starts: arm → takeoff → **fly waypoints** → land. The mission message is its own GO. | true |
+| `mission_manager` | what to fly: accepts or rejects commands, runs the flight state machine and the mission plan, chooses targets | `drone_telemetry`, `offboard_control`, and the optional avoidance, marker and payload nodes |
+| `offboard_control` | how to fly it with PX4: setpoint stream, OFFBOARD / ARM / LAND, pilot override, end of flight | PX4 only, plus `mission_manager` |
 
-- A mission only auto-starts when the node is **idle** (same condition as `handle_inactive`) — a mission arriving mid-flight is stored, not acted on.
-- `decide_mission_vs_hover()` flies waypoints **only when `mission_intent_` is true**, so a stale mission can never turn an OFFBOARD-hover into a mission.
-- The `/mission_path` subscription uses **VOLATILE** QoS (not transient-local): lora_drone's latched mission history is **not** replayed on startup, so an old mission can never launch the drone at boot.
+Two rules follow from this split. `offboard_control` is the only node that publishes to PX4, and `mission_manager` is the only node that writes the target. Optional nodes (avoidance, marker localizer, payload) only provide data or perform an action when asked; they never command PX4 or the target directly.
 
----
+## 2. Interfaces
 
-## 3. State machine
+### Between the two nodes
 
-### States
+| Topic | Type | Direction | Content |
+|---|---|---|---|
+| `/mission/start` | `std_msgs/Bool` | MM → OC | start a flight at the current position |
+| `/mission/target_position` | `geometry_msgs/Point` | MM → OC | position target in the EKF local NED frame (m) |
+| `/mission/target_velocity` | `geometry_msgs/Vector3` | MM → OC | velocity target in NED (m/s), used to align over a marker |
+| `/mission/target_yaw` | `std_msgs/Float32` | MM → OC | heading (rad); NaN keeps the heading at flight start |
+| `/mission/land` | `std_msgs/Bool` | MM → OC | landing request |
+| `/mission/resume` | `std_msgs/Bool` | MM → OC | request OFFBOARD again after the pilot took control |
+| `/mission/current_position` | `geometry_msgs/Point` | OC → MM | EKF local position, published only while valid |
+| `/mission/agl` | `std_msgs/Float32` | OC → MM | height above ground from the rangefinder (`dist_bottom`), NaN when invalid |
+| `/mission/heading` | `std_msgs/Float32` | OC → MM | current heading (rad, NED: 0 = north, clockwise) |
+| `/mission/flight_active` | `std_msgs/Bool` | OC → MM | flight in progress (latched) |
+| `/mission/offboard_active` | `std_msgs/Bool` | OC → MM | PX4 is in OFFBOARD (latched) |
+| `/mission/geo_reference` | `sensor_msgs/NavSatFix` | OC → MM | EKF GPS origin; `NO_FIX` without GPS (latched) |
 
-`enum class FlightState` — `state_` is the single source of truth for the current flight phase:
+### With the ground station (through drone_telemetry)
 
-| State | Meaning |
-|---|---|
-| `IDLE` | Waiting for a trigger |
-| `WAIT_LINK` | Triggered; waiting for fresh pose/state + FCU link **and** the pre-takeoff EKF gate (GPS 3D fix + stable local-z, §8). The setpoint stream is primed (current pose) throughout this wait. |
-| `TAKEOFF_DELAY` | Priming setpoint stream before entering OFFBOARD mode |
-| `ARMING` | Takeoff target set; requesting OFFBOARD + ARM |
-| `CLIMBING` | Armed; climbing to takeoff altitude |
-| `HOVER` | At altitude, OFFBOARD intent — holding position |
-| `MISSION` | Executing waypoint mission |
-| `LANDING` | AUTO.LAND in progress |
-| `ABORT` | External override / arm failure — returning PX4 to MANUAL |
+| Topic | Type | Direction | Content |
+|---|---|---|---|
+| `/gcs/command` | `std_msgs/String` | → MM | JSON `{"id", "cmd": "takeoff" \| "land" \| "mission" \| "continue" \| "settings", "alt", "options"}` |
+| `/gcs/command_ack` | `std_msgs/String` | MM → | JSON `{"id", "cmd", "result": "accepted" \| "denied", "text"}` |
+| `/gcs/mission` | `std_msgs/String` | → MM | JSON item list `{seq, lat, lon, alt, command, frame, params}`, altitude above Home (latched) |
+| `/mission/status_text` | `std_msgs/String` | MM → | JSON `{"severity", "text"}`, sent to the ground station as STATUSTEXT (50 characters) |
+| `/mission/progress` | `std_msgs/String` | MM → | JSON `{"seq", "total", "state", "step"}`, sent as MISSION_CURRENT; state is `idle`, `active`, `paused` or `complete` (latched) |
 
-### Transition diagram
+### Monitoring
+
+| Topic | Type | Content |
+|---|---|---|
+| `/mission/state` | `std_msgs/String` | core state name (`HOVER`, `MISSION`, ...), every tick |
+| `/mission/nav_mode` | `std_msgs/String` | navigation mode (`NOMINAL`, `AVOIDING`, `HOLDING`), every tick |
+
+### With PX4 (offboard_control only)
+
+| Topic | Direction | Use |
+|---|---|---|
+| `/fmu/in/offboard_control_mode` | → PX4 | position or velocity control; part of the OFFBOARD heartbeat |
+| `/fmu/in/trajectory_setpoint` | → PX4 | position (NED) or velocity, and yaw |
+| `/fmu/in/vehicle_command` | → PX4 | DO_SET_MODE OFFBOARD, ARM, NAV_LAND |
+| `/fmu/out/vehicle_local_position[_vN]` | PX4 → | position, validity flags, `dist_bottom`, EKF GPS origin, heading |
+| `/fmu/out/vehicle_status[_vN]` | PX4 → | arming state |
+| `/fmu/out/vehicle_control_mode` | PX4 → | whether OFFBOARD is active |
+| `/fmu/out/vehicle_land_detected` | PX4 → | touchdown |
+
+The `_vN` suffix is derived from `MESSAGE_VERSION` in `px4_msgs`, so the nodes work with PX4 1.17 and 1.18 SITL without configuration.
+
+### With optional nodes
+
+| Node | Interface | Used for |
+|---|---|---|
+| obstacle_avoidance | `/mission/goal` (Point) and `/avoidance/enable` (Bool) out, `/avoidance/status` (`custom_msgs/AvoidanceStatus`) in | missions started with the avoidance option |
+| ArUco localizer | `marker_topic` (`geometry_msgs/PointStamped`, marker offset from the drone in ENU) in | Search and Align steps of pick tasks |
+| payload | `payload_service` (`std_srvs/Trigger`) | automatic hook in pick tasks |
+
+### QoS
+
+PX4 topics use BEST_EFFORT, as uXRCE-DDS requires. `/mission/flight_active`, `/mission/offboard_active`, `/mission/geo_reference`, `/mission/progress` and `/gcs/mission` are RELIABLE + TRANSIENT_LOCAL with depth 1, so a node that starts or restarts late immediately receives the current value. The other internal topics use the default QoS (depth 10).
+
+## 3. mission_manager
+
+### Core state machine
 
 ```mermaid
 stateDiagram-v2
-    [*] --> IDLE
-
-    IDLE --> WAIT_LINK : OFFBOARD or Mission trigger
-
-    WAIT_LINK --> TAKEOFF_DELAY : link ok + EKF gate passed
-    TAKEOFF_DELAY --> ARMING : target set
-    ARMING --> CLIMBING : ARMED
-
-    CLIMBING --> MISSION : altitude reached\n(mission_intent_)
-    CLIMBING --> HOVER : altitude reached\n(OFFBOARD intent)
-
-    MISSION --> LANDING : last WP / LAND command
-    HOVER --> LANDING : done / LAND command
-    LANDING --> IDLE : disarmed
-
-    WAIT_LINK --> ABORT : arm-fail
-    TAKEOFF_DELAY --> ABORT : arm-fail
-    ARMING --> ABORT : arm-fail / timeout
-    CLIMBING --> ABORT : external override\nor unexpected disarm
-    HOVER --> ABORT : external override\nor unexpected disarm
-    MISSION --> ABORT : external override\nor unexpected disarm
-    ABORT --> IDLE : PX4 → MANUAL
+    [*] --> WAIT_FOR_POSITION
+    WAIT_FOR_POSITION --> IDLE: first position
+    IDLE --> TAKEOFF: Take-off accepted
+    TAKEOFF --> HOVER: altitude held for goal_hold_time
+    TAKEOFF --> IDLE: no flight_active within start_timeout
+    HOVER --> MISSION: Start mission accepted
+    HOVER --> STARTING: Start mission with options
+    STARTING --> MISSION: options ready
+    STARTING --> HOVER: not ready (command denied)
+    MISSION --> HOVER: plan finished or stopped
+    TAKEOFF --> PAUSED: PX4 left OFFBOARD
+    HOVER --> PAUSED: PX4 left OFFBOARD
+    MISSION --> PAUSED: PX4 left OFFBOARD (not a planned hand-over)
+    PAUSED --> MISSION: OFFBOARD back (mission was running)
+    PAUSED --> HOVER: OFFBOARD back
+    TAKEOFF --> LANDING: Land
+    HOVER --> LANDING: Land
+    MISSION --> LANDING: Land
+    PAUSED --> LANDING: Land
+    LANDING --> IDLE: flight_active = false
 ```
 
-### `transition_to()` — single transition point
+Any flying state also returns to `IDLE` when `offboard_control` reports that the flight has ended (disarm, refused ARM).
 
-All `state_` changes go through one function; each produces one `STATE: X -> Y` line in the log (console + mission_debug.log):
+The core never refers to a specific task. While in `MISSION` it hands every tick to the mission executor, which runs the compiled plan; the core only reacts to the executor's result (running, done, failed) and to commands. The pipeline is described in [MISSION_PIPELINE.md](MISSION_PIPELINE.md).
 
-```cpp
-void OffboardMode::transition_to(FlightState s) {
-    if (s == state_) return;
-    RCLCPP_INFO(..., "STATE %s -> %s", state_name(state_), state_name(s));
-    log_event("STATE: " + old + " -> " + s);
-    state_ = s;
-}
+The node runs one timer at `control_rate_hz` (20 Hz). Each tick checks for a pilot override, runs the current state, and publishes the state, the navigation mode, the avoidance enable flag and the progress.
+
+### Command handling
+
+1. The JSON command is parsed. A command with the same `id` as the previous one is a resend after a lost ACK: the stored ACK is sent again and nothing else happens.
+2. The command is checked against the state:
+   - Take-off: only in `IDLE`, with a position younger than `position_timeout`, and an altitude ≤ `max_takeoff_altitude`.
+   - Start mission: only in `HOVER`, if the mission compiles and every capability it needs is present (see section 6).
+   - Continue: during a manual hand-over or in `PAUSED`.
+   - Land: in any flying state; a running plan is aborted.
+   - Settings: only while a mission is starting, running or paused. The new speed and tolerances replace the current ones from the next tick; values of 0 are left unchanged.
+3. The result is published on `/gcs/command_ack`. A mission with options is answered when the options are ready (`STARTING`, at most `avoidance_ready_timeout`). Whether PX4 actually entered OFFBOARD or armed is checked by `drone_telemetry`, which waits for the PX4 acknowledgements before reporting `ACCEPTED` to the ground station.
+
+### Altitudes and speed
+
+Take-off climbs vertically from the current position: `target.z = z_now - alt`. The ground z at that moment is stored as Home and is the reference for waypoint altitudes (`z = z_ground - alt`).
+
+While flying to a waypoint the nose points at it (`yaw_mode: waypoint`), turning at most `yaw_rate_deg`; at the start of every leg, a heading error above `turn_first_deg` (10°) makes the drone turn in place before it moves. HOVER after a mission keeps the current heading. Details in [MISSION_PIPELINE.md](MISSION_PIPELINE.md).
+
+Without avoidance, legs between waypoints are flown at the mission speed (`cruise_speed` unless the ground station sets one, also during the mission): the target is a carrot that moves along the leg at that speed and waits when the drone lags behind, so PX4 never receives a far-away setpoint. PX4's own limits (`MPC_XY_VEL_MAX`, `MPC_Z_VEL_MAX_UP/DN`) remain the hard ceiling, and they also apply to take-off and vertical moves.
+
+## 4. offboard_control
+
+### Flight lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Warmup: /mission/start with a valid position
+    Warmup --> ArmRequested: warmup_ticks streamed / DO_SET_MODE OFFBOARD + ARM
+    ArmRequested --> Flying: PX4 armed
+    ArmRequested --> Idle: not armed within arm_timeout_s
+    Warmup --> Idle: Land before ARM
+    Flying --> Overridden: PX4 left OFFBOARD
+    Overridden --> Flying: OFFBOARD again (RC switch or /mission/resume)
+    Flying --> Landing: /mission/land / NAV_LAND
+    Overridden --> Landing: /mission/land / NAV_LAND
+    Landing --> Idle: landed
+    Flying --> Idle: disarmed (kill, failsafe, RC)
+    Overridden --> Idle: disarmed
 ```
 
-`state_ == MISSION` is now the source of truth for "currently flying waypoints" (the old `flying_mission_` flag was retired, STEP 3).
+These states are implicit in the code (`flight_active`, `offboard_seen`, `offboard_active`, `arm_request_time`, `was_armed`, `land_command_sent`); leaving a flight always goes through `end_flight()`, which resets them and publishes `/mission/flight_active = false`.
 
----
+### Setpoint stream
 
-## 4. Control loop
+A timer at `setpoint_rate_hz` (10 Hz) publishes `OffboardControlMode` and `TrajectorySetpoint` for as long as a flight is active. PX4 accepts OFFBOARD only after it has seen this stream, which is why the first `offboard_warmup_s` only streams. During the flight the stream is the OFFBOARD heartbeat: if the node hangs or loses DDS, PX4 leaves OFFBOARD and runs its failsafe.
 
-50 ms timer (`create_wall_timer(50ms, control_loop)`). `control_loop()` is a thin dispatcher that calls one helper per phase, in order (a helper returning `true` ends the tick early):
+The setpoint is either a position or a velocity, whichever `mission_manager` sent last. Velocity setpoints must be refreshed within `velocity_timeout_s`; otherwise the node switches back to holding the current position.
 
-1. `handle_inactive()` — idle / landed / aborted: stop stream; if just aborted, return PX4 to MANUAL.
-2. `begin_takeoff_delay(now)` — start the takeoff-delay window (primes the setpoint stream).
-3. `link_ready(now)` — require fresh pose (`< 1.0 s`), state (`< 1.5 s`), and `FCU connected`.
-4. **`ekf_ready(now)` — pre-takeoff EKF gate (§8): block ARM until a fresh GPS 3D fix AND local-z stable for `ekf_z_stable_sec`. Latched by `ekf_gate_passed_` — runs ONLY until it passes, never again mid-flight (a climbing z must not re-trip it). While waiting: hold current pose (prime) + stay in WAIT_LINK.**
-5. `prime_during_delay(now)` — hold current pose during the delay window.
-6. `capture_takeoff_target(now)` — latch `ground_z_` once; target z = `ground_z_ + climb_height` (→ ARMING). `climb_height` = **first waypoint's altitude** for a mission, else `takeoff_height_` (§7).
-7. `check_external_override(now)` — PX4 left OFFBOARD after stable → ABORT.
-8. `drive_and_stream(now)` — `set_offboard_mode()` + `arm_vehicle()` + stream target + stream watchdog.
-9. `check_arm_watchdogs(now)` — arm-fail timeout + unexpected disarm → ABORT.
-10. `check_altitude_progress(now)` — detect altitude reached (within `alt_reached_tol`) + altitude timeout (→ emergency land). Emits a throttled `CLIMB:` progress line to the log.
-11. `run_mission_or_hover(now)` — `decide_mission_vs_hover()`, then `fly_active_mission()` (§6, emits throttled `MISSION:` lines) or hover.
-12. `finalize_if_landed()` — landed + disarmed → IDLE.
+### Pilot override
 
-Most helpers are verbatim extractions of the old monolithic loop (STEP 2 refactor, §10); the `ekf_ready` gate (step 4) and the mission-altitude takeoff (step 6) were added later — see §8 and §7.
+`vehicle_control_mode.flag_control_offboard_enabled` tells the node whether PX4 is in OFFBOARD; changes are published on `/mission/offboard_active`. When PX4 leaves OFFBOARD after having reached it (sticks moved with `COM_RC_OVERRIDE`, RC mode switch, GCS Hold or RTL), the node keeps streaming but ignores targets and makes the setpoint follow the current position. When OFFBOARD comes back, either because the pilot flips the RC switch to Offboard or because `/mission/resume` makes the node send DO_SET_MODE OFFBOARD, the drone continues from where the pilot left it instead of jumping back to an old target.
 
----
+### Position forwarding
 
-## 5. Setpoint streamer (module)
+`vehicle_local_position` is forwarded as `/mission/current_position` only while `xy_valid` and `z_valid` are true, and `dist_bottom` as `/mission/agl` (NaN unless `dist_bottom_valid`). The EKF GPS origin is published on `/mission/geo_reference` whenever it or its validity changes.
 
-`SetpointStreamer` (`setpoint_streamer.hpp`) — PX4 exits OFFBOARD if no setpoint arrives for > ~0.5 s, so a dedicated thread guarantees the rate regardless of what the control loop is doing.
+## 5. Sequences
 
-- Owns its thread, target mutex, `running`/`streaming` atomics, and heartbeat. The node just calls `set_target(p)`, `set_streaming(false)`, `streaming()`, `last_publish_ns()`.
-- Publishes at `setpoint_rate_hz` (20 Hz) with deadline-based pacing.
-- Tries **`SCHED_FIFO` priority 80** (needs container `--privileged` / CAP_SYS_NICE). Log: `Setpoint streamer running at SCHED_FIFO priority 80`, else a warning and normal scheduling.
-- **Heartbeat:** `last_publish_ns()`; the control loop's watchdog (`drive_and_stream`) warns if the stream stalls > 250 ms while armed.
+### Take-off
 
----
+```
+GCS           drone_telemetry     mission_manager            offboard_control             PX4
+ │ Take-off 5 m ──►│                     │                          │                       │
+ │                 │ /gcs/command ──────►│ IDLE -> TAKEOFF          │                       │
+ │                 │◄─ /gcs/command_ack ─│ (accepted)               │                       │
+ │                 │                     │ /mission/start ─────────►│ hold point = here     │
+ │                 │                     │ /mission/target_position►│ stream setpoints (1 s)│
+ │                 │                     │◄── /mission/flight_active│                       │
+ │                 │                     │                          │ DO_SET_MODE OFFBOARD ─►│
+ │                 │                     │                          │ ARM ─────────────────►│
+ │◄─ ACCEPTED ─────│ (after PX4 ACKs OFFBOARD + ARM)                │                       │
+ │                 │                     │ target reached -> HOVER  │                       │
+```
 
-## 6. Mission flight — carrot follower (module)
+### Pilot override and resume
 
-`CarrotFollower` (`carrot_follower.hpp`) — **pure geometry, no ROS**, so it can be unit-tested standalone. Instead of commanding the far waypoint (PX4 sprints then brakes at corners), it advances a **carrot** (intermediate setpoint) toward the active waypoint:
+```
+pilot / GCS              offboard_control                 mission_manager
+ │ sticks moved ────────► PX4 leaves OFFBOARD             │
+ │                        /mission/offboard_active=false ►│ MISSION -> PAUSED, plan paused
+ │                        setpoint follows the drone      │ STATUSTEXT "Paused: pilot in control"
+ │ Continue (GCS) ───────────────────────────────────────►│ /mission/resume
+ │                        DO_SET_MODE OFFBOARD ─► PX4     │
+ │   or RC switch to Offboard                             │
+ │                        /mission/offboard_active=true ─►│ PAUSED -> MISSION, step restarted here
+```
 
-- `begin(wps, ground_z, start_x/y/z)` — load the mission, seat the carrot at the drone's position.
-- `update(drone_x/y/z, wp_elapsed)` → `Result{ setpoint, event, by_timeout, wp_index, drone_dist }`.
-  - Carrot advances `cruise_speed × dt` toward the WP, never leading the drone by more than `carrot_lead`.
-  - Event `WAYPOINT_PASSED` when the carrot flows through an intermediate WP (or `wp_timeout`).
-  - Event `MISSION_COMPLETE` when the drone is within `wp_reach_radius` of the final WP (or `wp_timeout`).
-- The node (`fly_active_mission`) sets the setpoint from the result and acts on the event: log it, reset its WP timer, or `land_vehicle()`.
+### Land and end of flight
 
-**Consume pattern (no replay):** at mission start, `decide_mission_vs_hover` hands a private copy of the inbox `mission_wps_` to `follower_.begin()` and clears the inbox. A completed mission does not repeat — send a new mission to fly again.
+```
+mission_manager                 offboard_control                      PX4
+ │ /mission/land ──────────────►│ NAV_LAND ──────────────────────────►│
+ │ state LANDING                │                 vehicle_land_detected│ landed
+ │◄── /mission/flight_active=false (end_flight)                       │
+ │ LANDING -> IDLE              │                                      │
+```
 
-Tuning: `carrot_lead ≈ cruise_speed × 1.0–1.3`.
+The mission and pick-task sequences are in [MISSION_PIPELINE.md](MISSION_PIPELINE.md).
 
----
+## 6. Failure handling
 
-## 7. Coordinate system
-
-All z values are **relative to takeoff ground**:
-
-| Phase | z source | Value |
-|---|---|---|
-| Takeoff — **Mission** | altitude of the **first waypoint** | drone climbs straight to mission altitude (no 5m→mission-alt step) |
-| Takeoff — **OFFBOARD hover** | param `takeoff_height_` | 5 m default |
-| Waypoint flight | z field in each `/mission_path` pose | relative to takeoff ground, set by ground station |
-
-`capture_takeoff_target` picks the climb height per trigger: for a mission it reads the first waypoint's z (sane positive value, else falls back to `takeoff_height_`); for an OFFBOARD hover it uses `takeoff_height_`. This removes the old mismatch where the drone took off to a fixed 5 m and the carrot then had to pull it up to the mission altitude.
-
-`ground_z_` = EKF local-z **locked at ARM** (`capture_takeoff_target`). All targets are offset: `target_z = ground_z_ + relative_z` — robust regardless of where the EKF local-z origin sits.
-
-> **EKF convergence:** arming before the EKF local position converges gives a drifting `ground_z_`/local-z, so the altitude check never triggers → climb timeout → emergency land. This is now handled in software by the **pre-takeoff EKF gate** (§8): the drone waits on the ground (state `WAIT_LINK`) for a GPS 3D fix + a stable local-z before it will arm, so a fresh-from-boot launch no longer fails this way. Good field practice still applies: power on outdoors, let GPS lock and the airframe sit still.
-
----
-
-## 8. Safety mechanisms
-
-| Mechanism | Condition | Action |
-|---|---|---|
-| **EKF gate (pre-takeoff)** | No fresh GPS 3D fix, **or** local-z not stable (within `ekf_z_stable_thresh` 0.30 m for `ekf_z_stable_sec` 3 s) | Hold on ground in `WAIT_LINK`, do not ARM (prime stream meanwhile) |
-| **Altitude timeout** | Armed, altitude not reached within `climb_timeout_sec` (60 s, anchored to `arm_time`) | Emergency land |
-| **Low battery (debounced)** | Armed, V < `min_battery_` (13.2 V) continuously for ≥ `low_batt_hold_sec` (5 s) | Emergency land |
-| **Stale FCU / pose** | `!connected` or pose/state older than threshold | Stop setpoint stream |
-| **Arm-fail timeout** | ARM not achieved within `arm_timeout_sec` (15 s) | ABORT → MANUAL |
-| **Unexpected disarm** | PX4 disarms while in flight | ABORT → MANUAL |
-| **External override** | PX4 leaves OFFBOARD for > `offboard_stable_sec` (3 s) | ABORT → MANUAL |
-
-**EKF gate (`ekf_ready`, §4 step 4).** Root-cause fix for the "takeoff → hover → never flies, then lands" failure: arming before the estimator converges gives a drifting local-z, so the reached-altitude test is never satisfied. The gate blocks ARM until (1) a fresh GPS 3D fix and (2) local-z has held within `ekf_z_stable_thresh` of a moving reference for `ekf_z_stable_sec`. It is **latched** (`ekf_gate_passed_`): it runs only until it passes once per flight and is then skipped — re-checking the z-stability mid-climb would (and did) bounce the FSM back to `WAIT_LINK`, hold the current pose, and make the drone jerk up/down until PX4 dropped OFFBOARD. Reset per flight in `reset_flight_state`. Disable with `ekf_gate_enable:=false` (e.g. GPS-denied bench tests).
-
-**Reached-altitude tolerance.** "Altitude reached" triggers when `z ≥ target − alt_reached_tol` (param, **0.5 m**). A real multirotor hovers ~0.2–0.4 m below the commanded altitude (normal position-hold droop), so the old hard-coded 0.1 m gate was effectively unreachable — the drone climbed, hovered just short, and timed out. 0.5 m matches real hold accuracy plus margin; it is a one-sided lower bound, so overshooting above target still counts as reached.
-
-The battery debounce filters out the transient voltage sag during motor spin-up on takeoff. Any recovery resets the timer; only a sustained low triggers landing. The battery debounce lives in the pure `BatteryMonitor` module (`battery_monitor.hpp`); the FSM-coupled checks (EKF gate / link / override / arm / altitude timeout) stay as `control_loop` helpers (§4).
-
-**Detailed flight logging.** To make field debugging analysable from `mission_debug.log` (not just live console), the gate and the climb/mission phases write throttled status lines: `EKF gate WAIT: …` (GPS/z reason), `EKF gate passed …`, `CLIMB: z=…/… mode=… armed=…`, and `MISSION WPn/m: drone(…) carrot(…) dist=… mode=…`. The `mode=` column reveals an external override (e.g. `POSCTL`) instantly instead of by inference.
-
----
-
-## 9. Threading model
-
-| Thread | Role |
+| Situation | Behaviour |
 |---|---|
-| **ROS executor** (SingleThreaded) | 50 ms `control_loop` timer, subscription callbacks, `/mode_signal` service, service-client done-callbacks. All on one thread — no data races between them. |
-| **Setpoint streamer** (`SetpointStreamer`) | Publishes `/mavros/setpoint_position/local` at 20 Hz, SCHED_FIFO. Internal mutex + atomics. |
+| EKF position invalid or not published | Take-off rejected (`position_timeout`) |
+| `offboard_control` not running | Take-off cancelled after `start_timeout`, back to `IDLE` |
+| PX4 refuses to arm (pre-arm check, RC, kill) | flight cancelled after `arm_timeout_s` |
+| Land pressed before ARM | flight cancelled without arming |
+| `offboard_control` stops during flight | PX4 loses the setpoint stream, leaves OFFBOARD and runs its failsafe |
+| Pilot takes over (outside a planned hand-over) | `PAUSED`; Continue or an RC switch back to Offboard resumes from the current position |
+| No GPS origin (indoors) | Take-off, Hover and Land work; Start mission is rejected |
+| Option or task needs a missing node | Start mission rejected with the reason; the drone keeps hovering |
+| A step fails (marker not found, payload error, timeout) | fallback to a manual hand-over where defined, otherwise the plan stops and the drone hovers |
+| Avoidance data stale or path blocked | HOLDING, then `blocked_action` after `blocked_timeout` |
+| ACK lost on the radio | the resent command only repeats the stored ACK |
 
-**Locks:**
-- `SetpointStreamer`'s internal mutex — protects its target between the node (writer) and the thread (reader).
-- `mission_mtx_` — protects inbox `mission_wps_` between `mission_cb` and the control loop.
-- `mission_log_mtx_` — thread-safe log file writes.
+## 7. Threading
 
-**Atomics:** `start_offboard_` (node); `streaming`, `running`, `last_pub_ns` (inside `SetpointStreamer`).
-
----
-
-## 10. Module API reference
-
-Detailed responsibilities and public interface of each extracted module. The two pure modules
-(`CarrotFollower`, `BatteryMonitor`) have **no ROS dependency** and can be unit-tested or reused
-in another project as-is.
-
-### 10.1 `CarrotFollower` (`carrot_follower.hpp`) — pure, no ROS
-
-Smooth, speed-limited waypoint following. Owns the carrot position, the active waypoint list,
-and the current waypoint index. The node owns only the per-WP timer.
-
-| Member | What it does |
-|---|---|
-| `Params{ cruise_speed, carrot_lead, reach_radius, wp_timeout, dt }` | Tuning. Set once from ROS params at startup. |
-| `struct Waypoint{ x,y,z, qx..qw }` | One waypoint; `z` is **relative to takeoff ground** (the follower adds `ground_z`). |
-| `begin(wps, ground_z, start_x,y,z)` | Load a mission and seat the carrot at the drone's current position (eases out, no jump to WP1). |
-| `update(drone_x,y,z, wp_elapsed_sec) → Result` | One 50 ms tick. Advances the carrot, clamps the lead, advances the WP index, returns the setpoint + an event. |
-| `Result{ x,y,z, qx..qw, event, by_timeout, wp_index, wp_count, drone_dist }` | `event ∈ {NONE, WAYPOINT_PASSED, MISSION_COMPLETE}`. |
-| `index() / count() / active()` | Progress queries (`active()` = there is still a WP to fly). |
-
-**Behaviour:** carrot advances `cruise_speed × dt` toward the active WP, never leading the drone
-by more than `carrot_lead`. An intermediate WP emits `WAYPOINT_PASSED` when the carrot flows
-through it (or `wp_timeout`); the final WP emits `MISSION_COMPLETE` when the drone is within
-`reach_radius` (or `wp_timeout`). The node reacts: set the setpoint, reset its WP timer, or land.
-
-### 10.2 `SetpointStreamer` (`setpoint_streamer.hpp`) — wraps a ROS publisher + thread
-
-Guarantees PX4's >2 Hz setpoint stream on a dedicated thread, independent of the control loop.
-
-| Member | What it does |
-|---|---|
-| `SetpointStreamer(node, pub, rate_hz)` | Construct with the node (clock/logger), the position-setpoint publisher, and the rate. |
-| `start() / stop()` | Launch / join the thread. `stop()` is idempotent (also called by the destructor). |
-| `set_target(p)` | Hand the latest setpoint to the thread **and** enable streaming. |
-| `set_streaming(on)` | Enable/disable publishing without changing the target. |
-| `streaming()` | Is it currently publishing? |
-| `last_publish_ns()` | Heartbeat (ns) of the last publish — the node's stall watchdog reads this. |
-
-**Behaviour:** publishes the latest target at `rate_hz` (20 Hz) with deadline-based pacing; tries
-`SCHED_FIFO` priority 80 (best-effort); only ever reads a copy of the target under a small mutex.
-
-### 10.3 `BatteryMonitor` (`battery_monitor.hpp`) — pure, no ROS
-
-Sustained-low battery debounce. Owns only the danger threshold and the low-voltage timer.
-
-| Member | What it does |
-|---|---|
-| `Params{ min_voltage (13.2), hold_sec (5.0) }` | Tuning. Set from ROS params at startup. |
-| `update(voltage, armed, landing_started, now_sec) → Verdict` | Feed one sample; returns `OK / WATCH_STARTED / EMERGENCY_LAND`. Filters invalid (≤1 V / NaN). |
-| `reset()` | Clear the timer (call on a new flight). |
-| `voltage()` | Last valid voltage seen. |
-
-**Behaviour:** while armed and not landing, the voltage must stay below `min_voltage`
-**continuously** for `hold_sec` before `EMERGENCY_LAND`; any recovery resets the timer (so a
-transient takeoff sag does not trigger). The node logs and calls `land_vehicle()` on the verdict.
-
-### 10.4 MAVROS I/O — kept in the node (no `VehicleIO`)
-
-`arm_vehicle()`, `set_offboard_mode()`, `set_manual_mode()`, `land_vehicle()` and their
-response callbacks stay in `OffboardMode`. They are **not** wrapped into a module because the
-responses drive the FSM directly (arm success → `CLIMBING` + `arm_time`; land → `LANDING` +
-`landing_started_`). A wrapper would have to call back into the node to mutate that state — more
-indirection without real decoupling. Revisit only if the FSM is ever made unit-testable against
-a mock vehicle, or ported to a non-MAVROS autopilot.
-
----
-
-## 11. Extending & reusing
-
-The split is designed so common changes touch one place:
-
-| To… | Do this |
-|---|---|
-| **Add a flight mode** (e.g. orbit, RTL, survey) | Add a `FlightState` value, a `tick_*()` helper, and one branch in the `control_loop` dispatcher (§4). The FSM is the extension point. |
-| **Change the path-following algorithm** (pure-pursuit, spline, Dubins) | Replace/extend `CarrotFollower` — it is pure and behind a small `begin()`/`update()` interface. The node code does not change. |
-| **Add a safety rule** | Battery-style stateful rule → a small pure module like `BatteryMonitor`; FSM-coupled rule → a `control_loop` helper. |
-| **Tune flight** | ROS params only (`cruise_speed`, `carrot_lead`, `takeoff_height_`, `min_battery_`, `alt_reached_tol`, `climb_timeout_sec`, `ekf_gate_enable`, `ekf_z_stable_thresh`, `ekf_z_stable_sec`, …) — no recompile. |
-| **Reuse in another project** | `CarrotFollower` and `BatteryMonitor` have **no ROS dependency** — copy the `.hpp/.cpp` pair and use directly (e.g. in a unit test or a different vehicle node). `SetpointStreamer` is reusable in any ROS node that streams a `PoseStamped` setpoint. |
-
-**Why this style is extensible:** the node is an *orchestrator* (FSM + ROS wiring); the *policies*
-(how to follow waypoints, how to debounce battery, how to stream) live in focused units with
-narrow interfaces. New behaviour is added by composing a new unit or a new state, not by editing
-a 400-line function. The pure modules are testable without a drone, so changes can be validated
-fast before a sim/flight test.
-
----
-
-## 12. Roadmap
-
-Incremental — each step: build + sim test before proceeding.
-
-### FSM cleanup
-| Step | Status | Description |
-|---|---|---|
-| STEP 1 | ✅ done | `enum class FlightState` + `state_` + `transition_to()`; logs `STATE: X -> Y` alongside bool flags. No behavior change. |
-| STEP 2 | ✅ done | `control_loop` → thin dispatcher of per-phase helpers (§4). Pure extraction. |
-| STEP 3 | ◑ in progress | Retire bool flags made redundant by `state_`. Done: `flying_mission_` → `state_ == MISSION`. Remaining flags (`landing_started_`, `reached_altitude_`, `has_armed`, `aborted_`, `landed_`) are **not** clean 1-1 swaps and are kept. `switch(state_)` dispatch deferred. |
-
-### Modularization
-| Module | Status | Description |
-|---|---|---|
-| 1 `CarrotFollower` | ✅ done | Pure waypoint-following geometry extracted (§6). |
-| 2 `SetpointStreamer` | ✅ done | Dedicated streamer thread extracted (§5). |
-| 3 `BatteryMonitor` | ✅ done | Pure battery sustained-low debounce extracted (§8). FSM-coupled checks (link / override / arm / altitude) stay as `control_loop` helpers — not worth dragging FSM state into a class. |
-| 4 `VehicleIO` | ✗ skipped (intentional) | MAVROS arm/set_mode/land kept in the node — responses drive the FSM, so a wrapper adds indirection without decoupling (§10.4). Revisit only if FSM unit-tests or a non-MAVROS port are needed. |
-
-### Behavior changes (intentional, sim-verified)
-- **Trigger split** (§2): OFFBOARD = hover-only; mission = auto-fly GO; `/mission_path` QoS → VOLATILE so latched missions don't launch the drone at boot.
-- **Pre-takeoff EKF gate** (§8): block ARM until GPS 3D fix + stable local-z; latched so it never re-trips mid-flight. Subscribes `/mavros/global_position/raw/fix`.
-- **Reached-altitude tolerance** `0.1 m → 0.5 m` (param `alt_reached_tol`, §8) — matches real position-hold droop so missions start reliably instead of timing out.
-- **Altitude timeout** `30 s → 60 s` (param `climb_timeout_sec`).
-- **Takeoff altitude = first waypoint's altitude** for missions (§7) — no 5m→mission-alt step.
-- **Detailed flight logging** (§8): throttled gate/climb/mission status lines (incl. PX4 `mode=`) to `mission_debug.log`.
-
----
-
-*Last updated: 2026-06-16*
+Each node is a single-threaded `rclpy` node. Timers and subscriptions run on one executor thread, so state is never shared between threads and no locks are needed. The payload request is an asynchronous service call polled from the timer, so waiting for the gripper never blocks the node. Timing decisions use the node clock in seconds rather than tick counts, so changing a rate parameter does not change behaviour.
