@@ -18,7 +18,7 @@ QtObject {
     readonly property int radius: 8
     readonly property int gap: 12
 
-    // ok / warn / error / stale / off / none / unknown -> mau
+    // ok / warn / error / stale / off / none / unknown -> colour
     function statusColor(s) {
         if (s === "ok") return ok
         if (s === "warn") return warn

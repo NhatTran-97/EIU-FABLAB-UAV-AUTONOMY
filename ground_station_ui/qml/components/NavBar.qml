@@ -14,7 +14,7 @@ Rectangle {
         anchors.margins: 10
         spacing: 6
 
-        // ---- nhan dien: logo EIU (ban nen toi) + ten san pham ----
+        // ---- branding: EIU logo (dark-background version) + product name ----
         RowLayout {
             objectName: "brand"
             Layout.fillWidth: true

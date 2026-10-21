@@ -16,7 +16,7 @@ ScrollView {
     readonly property var px4Link: links.values.px4 || ({})
     readonly property var jetLink: links.values[commands.gates.jetsonLink || "jetson"] || ({})   // 433 / SITL
 
-    // The trang thai gian deu het hang: so cot theo do rong (the toi thieu cardMin), chia deu phan du.
+    // Status cards fill each row evenly: column count from the width (minimum card width cardMin), spare space shared.
     readonly property int cardMin: 200
     readonly property int cardCols: Math.max(1, Math.floor((availableWidth + Theme.gap) / (cardMin + Theme.gap)))
     readonly property real cardW: Math.floor((availableWidth - (cardCols - 1) * Theme.gap) / cardCols)
@@ -33,7 +33,7 @@ ScrollView {
     function levelOf(s) { return s === "ok" ? "ok" : (s === "error" ? "error" : "stale") }
     function has(x) { return x !== null && x !== undefined }
     function num(x, digits, unit) { return has(x) && st.linkAlive ? x.toFixed(digits) + " " + unit : "—" }
-    // bo dem phat con trong cua radio: >= 50 % ok, 30-50 % sap nghen, < 30 % nghen
+    // free transmit buffer of the radio: >= 50 % ok, 30-50 % filling up, < 30 % congested
     function bufLevel(b) { return !has(b) ? "stale" : (b >= 50 ? "ok" : (b >= 30 ? "warn" : "error")) }
     function bufText(b) { return has(b) ? "  ·  uplink buffer " + b + "%" : "" }
     function rssi(l) { return has(l.rssiDbm) ? l.rssiDbm + " / " + l.remoteRssiDbm + " dBm" : "—" }
@@ -46,7 +46,7 @@ ScrollView {
         width: page.availableWidth
         spacing: Theme.gap
 
-        // ---------------- System Health (problem-first: van de len truoc) ----------------
+        // ---------------- System Health (problem-first: problems on top) ----------------
         Rectangle {
             objectName: "systemHealth"
             Layout.fillWidth: true
@@ -159,7 +159,7 @@ ScrollView {
         SectionTitle { text: "PX4 messages" }
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: msgList.count === 0 ? 44 : Math.min(msgList.contentHeight + 16, 260)   // rong khi trong
+            Layout.preferredHeight: msgList.count === 0 ? 44 : Math.min(msgList.contentHeight + 16, 260)   // empty state
             radius: Theme.radius; color: Theme.panel; border.color: Theme.border
 
             Text {

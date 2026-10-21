@@ -1,13 +1,13 @@
 import QtQuick
 import QtQuick.Layouts
 
-// Splash: anh campus EIU + lop phu, ten app o phan duoi; hien holdMs roi fade out; click de bo qua.
+// Splash: EIU campus photo + overlay, app name at the bottom; shown for holdMs, then fades out; click to skip.
 Rectangle {
     id: splash
     anchors.fill: parent
     z: 1000
     color: "#0b1220"
-    property int holdMs: 7000          // thoi gian hien splash (ms); bam vao de bo qua
+    property int holdMs: 7000          // display time (ms); click to skip
 
     Image {
         anchors.fill: parent
@@ -16,7 +16,7 @@ Rectangle {
         smooth: true
     }
     Rectangle { anchors.fill: parent; color: "#0b1220"; opacity: 0.45 }       // dark navy overlay
-    Rectangle {                                                               // gradient toi phan duoi (nen cho chu)
+    Rectangle {                                                               // darkening gradient at the bottom (text background)
         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
         height: parent.height * 0.42
         gradient: Gradient {
@@ -58,7 +58,7 @@ Rectangle {
         }
     }
 
-    // fade out; Timer thu 2 dam bao splash tat ke ca khi animation khong ket thuc
+    // fade out; a second Timer guarantees the splash closes even if the animation does not finish
     Behavior on opacity { NumberAnimation { duration: 450 } }
     function close() { opacity = 0; hideTimer.start() }
     Timer { running: true; interval: splash.holdMs; onTriggered: splash.close() }

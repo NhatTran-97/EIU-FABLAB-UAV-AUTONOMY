@@ -1,4 +1,4 @@
-"""Danh sach cong serial USB de chon trong tab Links."""
+"""USB serial ports offered in the Links tab."""
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 from serial.tools import list_ports

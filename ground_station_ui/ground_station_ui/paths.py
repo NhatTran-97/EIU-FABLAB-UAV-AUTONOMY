@@ -1,4 +1,4 @@
-"""Duong dan tai nguyen: source tree (<pkg>/qml, <pkg>/config) hoac ban da cai (share/<pkg>/...)."""
+"""Resource paths: source tree (<pkg>/qml, <pkg>/config) or installed package (share/<pkg>/...)."""
 
 from pathlib import Path
 
@@ -6,7 +6,7 @@ PKG = 'ground_station_ui'
 
 
 def package_root():
-    """Thu muc goc package: source tree neu co (chay thang), khong thi share/<pkg> (da cai)."""
+    """Package root: the source tree when available (run from source), otherwise share/<pkg> (installed)."""
     src = Path(__file__).resolve().parents[1]
     if (src / 'config').is_dir():
         return src
@@ -19,9 +19,9 @@ def resource_dir(name):
 
 
 def data_path(p):
-    """Duong dan trong gcs.yaml: tuyet doi / ~ giu nguyen; tuong doi -> tinh tu goc package.
+    """Resolve a gcs.yaml path: absolute and ~ paths are kept; relative paths are relative to the package root.
 
-    Du lieu (cache ban do, vung bay) nam trong package -> chep ca thu muc sang may khac la chay.
+    Data (map cache, airspace) lives inside the package, so copying the directory is enough to move it.
     """
     path = Path(str(p)).expanduser()
     return path if path.is_absolute() else package_root() / path

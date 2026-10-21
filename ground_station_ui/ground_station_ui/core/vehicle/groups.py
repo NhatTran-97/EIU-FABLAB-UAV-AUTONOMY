@@ -1,7 +1,7 @@
-"""Nhom du lieu cua vehicle. Moi nhom tu dang ky message qua attach(router).
+"""Vehicle data groups. Each group subscribes to the messages it needs in attach(router).
 
-Loc nguon: message PX4 chi nhan tu autopilot da nhan dien tren link hop le (vehicle.is_autopilot);
-DRONE_* chi nhan tu companion (vehicle.is_companion).
+Source filtering: PX4 messages are accepted only from the identified autopilot on an allowed link
+(vehicle.is_autopilot); DRONE_* messages only from the companion (vehicle.is_companion).
 """
 
 import math
@@ -19,7 +19,7 @@ MAX_MESSAGES = 50
 GPS_FIX = {0: 'No GPS', 1: 'No Fix', 2: '2D Fix', 3: '3D Fix', 4: 'DGPS', 5: 'RTK Float',
            6: 'RTK Fixed', 7: 'Static', 8: 'PPP'}
 SEVERITY = ['EMERGENCY', 'ALERT', 'CRITICAL', 'ERROR', 'WARNING', 'NOTICE', 'INFO', 'DEBUG']
-SENSORS = [   # GPS, pin: nhom rieng
+SENSORS = [   # GPS and battery have their own groups
     ('Gyro', mavlink.MAV_SYS_STATUS_SENSOR_3D_GYRO),
     ('Accel', mavlink.MAV_SYS_STATUS_SENSOR_3D_ACCEL),
     ('Compass', mavlink.MAV_SYS_STATUS_SENSOR_3D_MAG),
@@ -33,7 +33,7 @@ COMPONENT_NAMES = {
     mavlink.DRONE_COMPONENT_PX4: 'PX4 (DDS)',
     mavlink.DRONE_COMPONENT_RADIO: 'Radio 433 (drone)',
 }
-# don vi rate_hz theo component (radio: byte/s)
+# rate_hz unit per component (radio: bytes/s)
 COMPONENT_UNITS = {mavlink.DRONE_COMPONENT_RADIO: 'B/s'}
 LANDED = {0: '—', 1: 'ON GROUND', 2: 'IN AIR', 3: 'TAKING OFF', 4: 'LANDING'}
 COMPONENT_LEVELS = {0: 'ok', 1: 'warn', 2: 'error', 3: 'stale'}
@@ -46,7 +46,7 @@ class _VehicleGroup(FactGroup):
 
 
 class StatusGroup(_VehicleGroup):
-    """HEARTBEAT cua autopilot: ket noi, che do bay, armed, thoi gian bay."""
+    """Autopilot HEARTBEAT: link, flight mode, armed state, flight time."""
 
     def __init__(self, vehicle):
         super().__init__(vehicle, linkAlive=False, heartbeatAge=-1.0, armed=False,
@@ -65,9 +65,9 @@ class StatusGroup(_VehicleGroup):
 
     def on_heartbeat(self, m, _link):
         if m.autopilot == mavlink.MAV_AUTOPILOT_INVALID or m.type == mavlink.MAV_TYPE_GCS:
-            return                       # khong phai autopilot
+            return                       # not an autopilot
         if not self.vehicle.identify(m.get_srcSystem(), m.get_srcComponent(), _link):
-            return                       # autopilot khac / link khong hop le
+            return                       # another autopilot or a link that is not allowed
         self.set(source=f'{_link} · sys {m.get_srcSystem()}')
         now = time.monotonic()
         self._last_hb = now
@@ -79,7 +79,7 @@ class StatusGroup(_VehicleGroup):
             self._armed_at = None
         mode = (px4_modes.decode(m.custom_mode)
                 if m.base_mode & mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED else '—')
-        # failsafe: system_status = CRITICAL / EMERGENCY
+        # failsafe: system_status is CRITICAL / EMERGENCY
         self.set(armed=armed, mode=mode,
                  failsafe=m.system_status in (mavlink.MAV_STATE_CRITICAL, mavlink.MAV_STATE_EMERGENCY))
 
@@ -92,7 +92,7 @@ class StatusGroup(_VehicleGroup):
 
 
 def _gps_val(raw, scale, max_ok):
-    """So GPS_RAW_INT -> don vi that; 0 / UINT_MAX / qua lon (= khong co) -> None."""
+    """Convert GPS_RAW_INT fields to real units; 0 / UINT_MAX / out-of-range (= unknown) -> None."""
     if not raw or raw in (65535, 0xFFFFFFFF):
         return None
     v = raw / scale
@@ -112,18 +112,18 @@ class GpsGroup(_VehicleGroup):
         if self.vehicle.is_autopilot(m, _link):
             self.set(fix=GPS_FIX.get(m.fix_type, str(m.fix_type)), fixType=m.fix_type,
                      satellites=m.satellites_visible if m.satellites_visible != 255 else 0,
-                     # gia tri sentinel (UINT16/32_MAX, 9999) = khong co
+                     # sentinel values (UINT16/32_MAX, 9999) mean unknown
                      hdop=_gps_val(m.eph, 100.0, 50.0) if m.fix_type >= 2 else None,
                      hAcc=_gps_val(getattr(m, 'h_acc', 0), 1000.0, 1000.0) if m.fix_type >= 2 else None,
                      vAcc=_gps_val(getattr(m, 'v_acc', 0), 1000.0, 1000.0) if m.fix_type >= 2 else None)
 
     def on_position(self, m, _link):
-        if self.vehicle.accept_global(m, _link):          # autopilot; companion khi autopilot stale
+        if self.vehicle.accept_global(m, _link):          # autopilot; companion when the autopilot is stale
             self.set(lat=m.lat / 1e7, lon=m.lon / 1e7)
 
 
 class HomeGroup(_VehicleGroup):
-    """Diem Home (PX4 dat khi arm / co GPS lan dau)."""
+    """Home position (set by PX4 on arming or first GPS fix)."""
 
     def __init__(self, vehicle):
         super().__init__(vehicle, valid=False, lat=None, lon=None, alt=None)
@@ -148,14 +148,14 @@ class BatteryGroup(_VehicleGroup):
         if not self.vehicle.is_autopilot(m, _link):
             return
         self.set(
-            percent=m.battery_remaining if m.battery_remaining >= 0 else -1,   # -1: khong uoc luong
+            percent=m.battery_remaining if m.battery_remaining >= 0 else -1,   # -1: not estimated
             voltage=round(m.voltage_battery / 1000.0, 2) if m.voltage_battery != 65535 else None,
             current=round(m.current_battery / 100.0, 1) if m.current_battery >= 0 else None,
         )
 
 
 class SensorsGroup(_VehicleGroup):
-    """Suc khoe cam bien tu SYS_STATUS (present / enabled / health bitmask)."""
+    """Sensor health from SYS_STATUS (present / enabled / health bitmasks)."""
 
     def __init__(self, vehicle):
         super().__init__(vehicle)
@@ -185,12 +185,12 @@ ALT_MODES = ('auto', 'indoor', 'outdoor')
 
 
 class FlightGroup(_VehicleGroup):
-    """Do cao, toc do, huong.
+    """Altitude, speed and heading.
 
-    altHome  = GLOBAL_POSITION_INT.relative_alt (so voi Home, can GPS)
-    altLocal = -LOCAL_POSITION_NED.z (EKF; trong nha: rangefinder MTF-02)
-    altRel   = gia tri hien thi: indoor -> altLocal, outdoor -> altHome, auto -> altHome khi fix >= 3D.
-    Trong nha khong dung altHome: Home chot luc bat nguon, EKF reset do cao -> relative_alt lech.
+    altHome  = GLOBAL_POSITION_INT.relative_alt (above Home, needs GPS)
+    altLocal = -LOCAL_POSITION_NED.z (EKF; indoors from the MTF-02 rangefinder)
+    altRel   = displayed value: indoor -> altLocal, outdoor -> altHome, auto -> altHome with fix >= 3D.
+    altHome is not used indoors: Home is latched at power-up and EKF height resets make relative_alt drift.
     """
 
     def __init__(self, vehicle):
@@ -228,10 +228,10 @@ class FlightGroup(_VehicleGroup):
     def on_global(self, m, _link):
         if not self.vehicle.accept_global(m, _link):
             return
-        # altGlobal (m AMSL): param7 cua NAV_TAKEOFF
+        # altGlobal (m AMSL): NAV_TAKEOFF param7
         self.set(altHome=round(m.relative_alt / 1000.0, 1), altGlobal=round(m.alt / 1000.0, 2))
         if not self.vehicle.is_autopilot(m, _link) and m.hdg != 65535:
-            self.set(heading=round(m.hdg / 100.0, 1))     # hdg chi lay tu companion
+            self.set(heading=round(m.hdg / 100.0, 1))     # hdg is taken from the companion only
         self._pick()
 
     def on_local(self, m, _link):
@@ -251,7 +251,7 @@ class FlightGroup(_VehicleGroup):
 
 
 def q_ned_to_euler(q):
-    """Quaternion (w, x, y, z) FRD -> NED -> (roll, pitch, yaw) rad (yaw: tu Bac, chieu kim dong ho)."""
+    """Quaternion (w, x, y, z) FRD -> NED to (roll, pitch, yaw) in rad (yaw from North, clockwise)."""
     w, x, y, z = q
     roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
     pitch = math.asin(max(-1.0, min(1.0, 2 * (w * y - z * x))))
@@ -260,12 +260,12 @@ def q_ned_to_euler(q):
 
 
 class AttitudeGroup(_VehicleGroup):
-    """Tu the (do): roll, pitch, heading 0-360 (tu Bac, chieu kim dong ho).
+    """Attitude in degrees: roll, pitch, heading 0-360 (from North, clockwise).
 
-    Nguon theo thu tu uu tien:
-      px4    : ATTITUDE tu autopilot (915 / SITL)
-      jetson : DRONE_LOCAL_POSE.q (vehicle_odometry qua DDS), khi px4 stale > STALE_S
-    Moi nguon stale -> valid = False.
+    Sources in priority order:
+      px4    : ATTITUDE from the autopilot (915 / SITL)
+      jetson : DRONE_LOCAL_POSE.q (vehicle_odometry over DDS), used when px4 is stale > STALE_S
+    All sources stale -> valid = False.
     values: valid, source ('px4' | 'jetson' | ''), roll, pitch, heading
     """
     STALE_S = 2.0
@@ -294,7 +294,7 @@ class AttitudeGroup(_VehicleGroup):
             return
         t = self._seen['px4']
         if t is not None and time.monotonic() - t < self.STALE_S:
-            return                                    # px4 con moi -> uu tien
+            return                                    # px4 still fresh: it has priority
         self._apply('jetson', *q_ned_to_euler(tuple(m.q)))
 
     def tick(self, now):
@@ -304,7 +304,7 @@ class AttitudeGroup(_VehicleGroup):
 
 
 def euler_ned_to_q(roll, pitch, yaw):
-    """roll / pitch / yaw (rad, FRD so voi NED) -> quaternion (w, x, y, z) -- nhu ATTITUDE_QUATERNION."""
+    """roll / pitch / yaw (rad, FRD relative to NED) -> quaternion (w, x, y, z), as in ATTITUDE_QUATERNION."""
     cr, sr = math.cos(roll / 2), math.sin(roll / 2)
     cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
     cy, sy = math.cos(yaw / 2), math.sin(yaw / 2)
@@ -313,16 +313,18 @@ def euler_ned_to_q(roll, pitch, yaw):
 
 
 class LocalPoseGroup(_VehicleGroup):
-    """Pose cuc bo (khung EKF cua PX4) cho trang 3D.
+    """Local pose (PX4 EKF frame) for the 3D page.
 
-    Nguon theo thu tu uu tien (chuyen khi nguon tren stale > STALE_S):
-      jetson : DRONE_LOCAL_POSE (vehicle_odometry qua DDS, radio 433)
+    Sources in priority order (switches when the higher one is stale > STALE_S):
+      jetson : DRONE_LOCAL_POSE (vehicle_odometry over DDS, radio 433)
       px4    : LOCAL_POSITION_NED + ATTITUDE_QUATERNION / ATTITUDE (radio 915 / SITL UDP)
 
     values: valid, source ('jetson' | 'px4' | ''), e/n/u (m, ENU), q (w,x,y,z: FLU -> ENU),
-            ve/vn/vu, speed, age_s, trailPoints
-    trail : PathLog [e, n, u]; buoc TRAIL_STEP_M, toi da TRAIL_MAX (bo TRAIL_TRIM diem dau).
-            Xoa khi reset_counter doi; giu nguyen khi doi nguon (cung khung EKF).
+            ve/vn/vu, speed, age_s, trailPoints,
+            extentM (largest horizontal distance from the EKF origin reached since the trail was cleared,
+            rounded up to whole metres; sizes the 3D grid)
+    trail : PathLog of [e, n, u]; step TRAIL_STEP_M, at most TRAIL_MAX (drops the first TRAIL_TRIM).
+            Cleared when reset_counter changes; kept across source switches (same EKF frame).
     """
     TRAIL_STEP_M = 0.05
     TRAIL_MAX = 3000
@@ -331,9 +333,9 @@ class LocalPoseGroup(_VehicleGroup):
 
     def __init__(self, vehicle):
         super().__init__(vehicle, valid=False, source='', e=0.0, n=0.0, u=0.0, q=[1.0, 0.0, 0.0, 0.0],
-                         ve=0.0, vn=0.0, vu=0.0, speed=0.0, age_s=-1.0, trailPoints=0)
+                         ve=0.0, vn=0.0, vu=0.0, speed=0.0, age_s=-1.0, trailPoints=0, extentM=0.0)
         self.trail = PathLog()
-        self._seen = {'jetson': None, 'px4': None}      # source -> t nhan cuoi (monotonic)
+        self._seen = {'jetson': None, 'px4': None}      # source -> last receive time (monotonic)
         self._reset = None
         self._att = None                                # (t, q NED/FRD, 'q' | 'euler')
 
@@ -347,17 +349,17 @@ class LocalPoseGroup(_VehicleGroup):
         t = self._seen[source]
         return t is not None and now - t < self.STALE_S
 
-    # --- nguon Jetson (uu tien) -------------------------------------------------------------
+    # --- Jetson source (preferred) ---------------------------------------------------------
     def on_pose(self, m, _link):
         if not self.vehicle.is_companion(m, _link):
             return
         if self._reset is not None and m.reset_counter != self._reset:
-            self.clear_trail()                    # EKF reset vi tri
+            self.clear_trail()                    # EKF position reset
         self._reset = m.reset_counter
         self._seen['jetson'] = time.monotonic()
         self._apply('jetson', m.x, m.y, m.z, tuple(m.q), m.vx, m.vy, m.vz)
 
-    # --- nguon PX4 truc tiep (du phong) -----------------------------------------------------
+    # --- direct PX4 source (fallback) -----------------------------------------------------
     def on_px4_attitude_q(self, m, _link):
         if self.vehicle.is_autopilot(m, _link):
             self._att = (time.monotonic(), (m.q1, m.q2, m.q3, m.q4), 'q')
@@ -366,7 +368,7 @@ class LocalPoseGroup(_VehicleGroup):
         if not self.vehicle.is_autopilot(m, _link):
             return
         if self._att is not None and self._att[2] == 'q' and time.monotonic() - self._att[0] < self.STALE_S:
-            return                                # ATTITUDE_QUATERNION con moi -> uu tien
+            return                                # ATTITUDE_QUATERNION still fresh: it has priority
         self._att = (time.monotonic(), euler_ned_to_q(m.roll, m.pitch, m.yaw), 'euler')
 
     def on_px4_position(self, m, _link):
@@ -375,11 +377,11 @@ class LocalPoseGroup(_VehicleGroup):
         now = time.monotonic()
         self._seen['px4'] = now
         if self._fresh('jetson', now):
-            return                                # jetson con moi -> uu tien
+            return                                # jetson still fresh: it has priority
         q = self._att[1] if self._att is not None and now - self._att[0] < self.STALE_S else (1.0, 0.0, 0.0, 0.0)
         self._apply('px4', m.x, m.y, m.z, q, m.vx, m.vy, m.vz)
 
-    # --- chung ------------------------------------------------------------------------------
+    # --- common ----------------------------------------------------------------------------
     def _apply(self, source, x, y, z, q_ned, vx, vy, vz):
         e, n, u = ned_to_enu(x, y, z)
         q = q_ned_frd_to_enu_flu(tuple(q_ned))
@@ -387,6 +389,9 @@ class LocalPoseGroup(_VehicleGroup):
                  q=[round(c, 4) for c in q],
                  ve=round(vy, 2), vn=round(vx, 2), vu=round(-vz, 2),
                  speed=round(math.sqrt(vx * vx + vy * vy + vz * vz), 2), age_s=0.0)
+        reach = math.ceil(max(abs(e), abs(n)))
+        if reach > self.values['extentM']:
+            self.set(extentM=float(reach))
         last = self.trail.last()
         if last is None or math.dist(last, (e, n, u)) >= self.TRAIL_STEP_M:
             self.trail.add((round(e, 3), round(n, 3), round(u, 3)))
@@ -396,7 +401,7 @@ class LocalPoseGroup(_VehicleGroup):
 
     def clear_trail(self):
         self.trail.clear()
-        self.set(trailPoints=0)
+        self.set(trailPoints=0, extentM=0.0)
 
     def tick(self, now):
         src = self.values['source']
@@ -411,7 +416,7 @@ class LocalPoseGroup(_VehicleGroup):
 
 
 def geo_dist_m(lat1, lon1, lat2, lon2):
-    """Khoang cach (m) giua 2 diem GPS gan nhau, xap xi equirectangular."""
+    """Distance (m) between two nearby GPS points, equirectangular approximation."""
     k = math.pi / 180 * 6371000.0
     dx = (lon2 - lon1) * k * math.cos(math.radians((lat1 + lat2) / 2))
     dy = (lat2 - lat1) * k
@@ -419,7 +424,7 @@ def geo_dist_m(lat1, lon1, lat2, lon2):
 
 
 def write_gpx(path, segments, name='EIU drone flight'):
-    """segments: [[[lat, lon, alt_amsl, t_unix], ...], ...] -> file GPX 1.1."""
+    """Write segments [[[lat, lon, alt_amsl, t_unix], ...], ...] to a GPX 1.1 file."""
     import os
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     out = ['<?xml version="1.0" encoding="UTF-8"?>',
@@ -437,16 +442,21 @@ def write_gpx(path, segments, name='EIU drone flight'):
 
 
 class TrackGroup(_VehicleGroup):
-    """Vet bay GPS (GLOBAL_POSITION_INT cua autopilot), chi ghi khi armed; moi lan arm = 1 doan.
+    """GPS flight track, recorded while flying; one segment per flight.
 
-    _flight : day du, buoc STEP_M; disarm -> ghi GPX vao save_dir.
-    path    : PathLog de ve, buoc DISPLAY_STEP_M; vuot DISPLAY_MAX -> thin() bo 1/2 so diem.
+    Positions come from GLOBAL_POSITION_INT of the autopilot, or of the companion when the autopilot position is
+    stale (vehicle.accept_global). Flying = armed while the autopilot heartbeat is alive; without it (Jetson
+    only), flying = more than AIRBORNE_ALT_M above Home.
+
+    _flight : full resolution, step STEP_M; written to save_dir as GPX on disarm.
+    path    : PathLog for display, step DISPLAY_STEP_M; above DISPLAY_MAX, thin() halves the points.
     values  : recording, points, lengthM, lastFile
     """
     STEP_M = 0.5
     DISPLAY_STEP_M = 2.0
     DISPLAY_MAX = 6000
-    MAX_FLIGHT_POINTS = 200000          # ~100 km o 0.5 m/diem
+    MAX_FLIGHT_POINTS = 200000          # ~100 km at 0.5 m per point
+    AIRBORNE_ALT_M = 0.5                # m above Home, flight detection without the autopilot heartbeat
 
     def __init__(self, vehicle, save_dir=None):
         super().__init__(vehicle, recording=False, points=0, lengthM=0.0, lastFile='')
@@ -459,9 +469,13 @@ class TrackGroup(_VehicleGroup):
         router.subscribe('GLOBAL_POSITION_INT', self.on_global)
 
     def on_global(self, m, _link):
-        if not self.vehicle.is_autopilot(m, _link):
+        if not self.vehicle.accept_global(m, _link):
             return
-        armed = bool(self.vehicle.groups['status'].values.get('armed'))
+        status = self.vehicle.groups['status'].values
+        if self.vehicle.is_autopilot(m, _link) or status.get('linkAlive'):
+            armed = bool(status.get('armed'))
+        else:                                       # companion only: no arming state available
+            armed = m.relative_alt / 1000.0 > self.AIRBORNE_ALT_M
         if armed != self._armed:
             self._armed = armed
             if armed:
@@ -500,7 +514,7 @@ class TrackGroup(_VehicleGroup):
             self.set(lastFile=f'error: {e}')
 
     def clear(self):
-        """Xoa path hien thi; _flight va file GPX khong doi."""
+        """Clear the displayed path; _flight and saved GPX files are kept."""
         self.path.clear()
         if self._armed:
             self.path.start_segment()
@@ -508,7 +522,7 @@ class TrackGroup(_VehicleGroup):
 
 
 class GimbalGroup(_VehicleGroup):
-    """Goc gimbal (DRONE_GIMBAL_STATE tu companion), so voi than drone."""
+    """Gimbal angles (DRONE_GIMBAL_STATE from the companion), relative to the drone body."""
     STALE_S = 3.0
 
     def __init__(self, vehicle):
@@ -533,7 +547,7 @@ class GimbalGroup(_VehicleGroup):
 
 
 class MessagesGroup(_VehicleGroup):
-    """STATUSTEXT. Nhan ca truoc heartbeat dau tien (canh bao preflight cua PX4)."""
+    """STATUSTEXT. Accepted even before the first heartbeat (PX4 sends preflight warnings early)."""
 
     def attach(self, router):
         router.subscribe('STATUSTEXT', self.on_text)
@@ -542,7 +556,7 @@ class MessagesGroup(_VehicleGroup):
         if m.get_srcComponent() == mavlink.MAV_COMP_ID_MISSIONPLANNER:
             return
         v = self.vehicle
-        # autopilot, companion, hoac link autopilot hop le khi chua nhan dien
+        # autopilot, companion, or an allowed autopilot link before identification
         if not (v.is_autopilot(m, _link) or v.is_companion(m, _link)
                 or (v.sysid is None and v.link_allowed(_link))):
             return
@@ -555,8 +569,43 @@ class MessagesGroup(_VehicleGroup):
         self.set_items([item] + self.items[:MAX_MESSAGES - 1])
 
 
+class MissionProgressGroup(_VehicleGroup):
+    """Mission progress reported by the Jetson (mission_manager via drone_telemetry).
+
+    MISSION_CURRENT from the companion: current item, item count and mission state. While the state is
+    `paused` the mission waits for the operator: a planned manual task at a waypoint, or a pause after the
+    pilot took control. `text` is the latest STATUSTEXT from the companion and explains which.
+    values: valid, seq, total, state ('idle' | 'active' | 'paused' | 'complete' | ''), text
+    """
+    STALE_S = 3.0
+    STATES = {2: 'idle', 3: 'active', 4: 'paused', 5: 'complete'}   # MAVLink MISSION_STATE
+
+    def __init__(self, vehicle):
+        super().__init__(vehicle, valid=False, seq=0, total=0, state='', text='')
+        self._last = None
+
+    def attach(self, router):
+        router.subscribe('MISSION_CURRENT', self.on_current)
+        router.subscribe('STATUSTEXT', self.on_text)
+
+    def on_current(self, m, _link):
+        if not self.vehicle.is_companion(m, _link):
+            return
+        self._last = time.monotonic()
+        self.set(valid=True, seq=int(m.seq), total=int(getattr(m, 'total', 0)),
+                 state=self.STATES.get(int(getattr(m, 'mission_state', 0)), ''))
+
+    def on_text(self, m, _link):
+        if self.vehicle.is_companion(m, _link):
+            self.set(text=m.text)
+
+    def tick(self, now):
+        if self._last is not None and now - self._last > self.STALE_S:
+            self.set(valid=False)
+
+
 class CompanionGroup(_VehicleGroup):
-    """Companion: HEARTBEAT cua drone_telemetry + DRONE_COMPONENT_STATUS."""
+    """Companion: drone_telemetry HEARTBEAT and DRONE_COMPONENT_STATUS."""
 
     def __init__(self, vehicle):
         super().__init__(vehicle, linkAlive=False, heartbeatAge=-1.0)
@@ -570,7 +619,7 @@ class CompanionGroup(_VehicleGroup):
     def on_heartbeat(self, m, _link):
         if m.type == mavlink.MAV_TYPE_ONBOARD_CONTROLLER and self.vehicle.is_companion(m, _link):
             self._last_hb = time.monotonic()
-            self.vehicle.companion_link = _link        # link gui lenh / waypoint
+            self.vehicle.companion_link = _link        # link used for commands / waypoints
 
     def on_component(self, m, _link):
         if self.vehicle.is_companion(m, _link):

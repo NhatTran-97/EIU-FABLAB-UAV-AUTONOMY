@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 
-// Tai truoc vung dang xem vao cache .mbtiles (dung offline).
+// Prefetch the visible area into the .mbtiles cache (for offline use).
 Rectangle {
     id: panel
     property var map: null
@@ -14,7 +14,7 @@ Rectangle {
     readonly property bool running: prog.running === true
     readonly property var bbox: {
         if (!map || map.width <= 0 || map.height <= 0) return null
-        void map.center; void map.zoomLevel; void map.width; void map.height  // tinh lai khi xem vung khac
+        void map.center; void map.zoomLevel; void map.width; void map.height  // recompute when the view changes
         var r = map.visibleRegion.boundingGeoRectangle()
         if (!r.isValid) return null
         return { west: r.topLeft.longitude, north: r.topLeft.latitude,
@@ -23,7 +23,7 @@ Rectangle {
     readonly property int estimate: bbox ? mapService.estimateTiles(layerId, bbox.west, bbox.south, bbox.east,
                                                                      bbox.north, zmin.value, zmax.value) : 0
 
-    width: 360          // co dinh; noi dung ben trong (SpinBox 110 px) vua khung, chu dai tu xuong dong
+    width: 360          // fixed width; content (110 px SpinBox) fits, long text wraps
     implicitHeight: col.implicitHeight + 28
     radius: Theme.radius
     color: "#ee161b22"
@@ -53,7 +53,7 @@ Rectangle {
         Text {
             color: panel.estimate > mapService.maxPrefetchTiles ? Theme.error : Theme.text
             font.pixelSize: 12
-            // anh ve tinh ~20 KB/o
+            // satellite imagery ~20 KB per tile
             text: panel.estimate > mapService.maxPrefetchTiles
                   ? "Area too large (> " + mapService.maxPrefetchTiles + " tiles) — zoom in to the flight area or lower max zoom"
                   : "Estimate: " + panel.estimate + " tiles  (~" + (panel.estimate * 0.02).toFixed(0) + " MB)"

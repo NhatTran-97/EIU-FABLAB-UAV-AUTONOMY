@@ -8,7 +8,7 @@ import QtPositioning
 import "../components"
 import "../models/eiu_drone"
 
-// Ban do offline (QtLocation + tile server localhost, cache .mbtiles) + soan waypoint.
+// Offline map (QtLocation + localhost tile server with .mbtiles cache) and waypoint editing.
 Item {
     id: page
 
@@ -16,17 +16,22 @@ Item {
     readonly property var home: vehicle.home.values
     readonly property var fl: vehicle.flight.values
     readonly property bool hasDrone: gps.lat !== null && gps.lat !== undefined && gps.lat !== 0
-    readonly property string layerId: mapService.currentLayer     // chon o trang Cai dat
+    readonly property string layerId: mapService.currentLayer     // chosen on the Settings page
     property bool addMode: false
     readonly property bool indoor: flightEnv.state.effective === "indoor"
-    property bool showWaypoints: false      // panel waypoint an / hien (nho qua Settings)
-    property bool showTrack: true          // vet bay GPS (nut 〰; nhan giu = xoa)
-    Settings { category: "mapPage"; property alias showWaypoints: page.showWaypoints }
+    property bool showWaypoints: false      // waypoint panel shown / hidden (remembered in Settings)
+    property bool showTrack: true          // flown path (checkbox bottom left / 〰 button; remembered)
+    readonly property color trackColor: "#ff9f1a"   // flown path; the planned path uses Theme.accent
+    Settings {
+        category: "mapPage"
+        property alias showWaypoints: page.showWaypoints
+        property alias showTrack: page.showTrack
+    }
     property int selected: -1
-    property var pin: null              // vi tri vua nhap toa do (ghim tam)
+    property var pin: null              // position just entered in the coordinate box (temporary pin)
     property string searchError: ""
 
-    // Giu vi tri / zoom khi doi lop (doi lop = tao lai Map voi plugin khac)
+    // Keep position / zoom across layer changes (a layer change recreates the Map with another plugin)
     property var viewCenter: QtPositioning.coordinate(mapService.defaultCenter[0], mapService.defaultCenter[1])
     property real viewZoom: mapService.defaultZoom
     property bool centeredOnDrone: false
@@ -37,7 +42,7 @@ Item {
         centeredOnDrone = true
     }
 
-    // Nhap toa do -> bay toi + ghim
+    // Enter coordinates -> fly the view there and drop a pin
     function goTo(text) {
         var ll = mapService.parseLatLon(text)
         if (ll.length !== 2) {
@@ -52,7 +57,7 @@ Item {
         }
     }
 
-    // Luu vung dang xem (debounce) -> lan mo app sau hien lai dung cho nay
+    // Save the viewed area (debounced) so the next start opens at the same place
     Timer {
         id: saveViewTimer
         interval: 1500
@@ -67,7 +72,7 @@ Item {
         return ({})
     }
 
-    // Mau theo cambay.mod.gov.vn: cam bay do dam, han che bay cam
+    // Colours as on cambay.mod.gov.vn: prohibited dark red, restricted orange
     readonly property var zoneKinds: ({
         prohibited: { title: "No-fly zone",       color: "#b3261e", fill: 0.62, border: 0 },
         military:   { title: "Military area",        color: "#b3261e", fill: 0.62, border: 0 },
@@ -88,7 +93,7 @@ Item {
         anchors.fill: parent
         spacing: Theme.gap
 
-        // ===================== BAN DO =====================
+        // ===================== MAP AREA =====================
         Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -100,12 +105,12 @@ Item {
                 id: mapLoader
                 anchors.fill: parent
                 sourceComponent: mapComponent
-                // doi lop -> tao lai Map (Map.plugin chi gan duoc luc tao)
+                // layer change -> recreate the Map (Map.plugin can only be set at creation)
                 property string layerKey: page.layerId
                 onLayerKeyChanged: { active = false; active = true }
             }
 
-            // ---- thong bao goc trai (duoi o tim kiem) ----
+            // ---- notices, top left (under the search box) ----
             Column {
                 anchors.top: parent.top; anchors.topMargin: 60
                 anchors.left: parent.left; anchors.leftMargin: 12
@@ -113,7 +118,7 @@ Item {
                 spacing: 8
                 z: 26
 
-                // mat telemetry PX4 sau khi da ket noi: so lieu dang hien la gia tri cu
+                // PX4 telemetry lost after being connected: the values shown are stale
                 Rectangle {
                     objectName: "px4LostBanner"
                     readonly property var st: vehicle.status.values
@@ -128,7 +133,7 @@ Item {
                     }
                 }
 
-                // bo tham so PX4 khong khop moi truong bay
+                // PX4 parameter set does not match the flight environment
                 Rectangle {
                     objectName: "envMismatch"
                     visible: flightEnv.state.mismatch !== ""
@@ -144,18 +149,18 @@ Item {
 
             }
 
-            // ---- dong ho tu the + la ban + do cao (goc tren phai, giong QGC) ----
+            // ---- attitude + compass + altitude instruments (top right, as in QGC) ----
             InstrumentPanel {
                 id: instruments
                 anchors.top: parent.top; anchors.right: parent.right; anchors.margins: 12
                 z: 25
-                // ban do hep (cua so nho / dang mo panel waypoint) -> thu nho dong ho
+                // narrow map (small window / waypoint panel open) -> smaller instruments
                 transformOrigin: Item.TopRight
                 scale: parent.width < 900 ? 0.7 : 1
                 readonly property real shownWidth: width * scale
             }
 
-            // ---- cong cu ben phai (duoi khung dong ho) ----
+            // ---- tool buttons on the right (under the instruments) ----
             Column {
                 anchors.right: parent.right; anchors.top: instruments.bottom
                 anchors.rightMargin: 12; anchors.topMargin: 12
@@ -163,7 +168,7 @@ Item {
                 component ToolBtn: Rectangle {
                     id: tb
                     property string label: ""
-                    property string tip: ""            // chu thich khi re chuot
+                    property string tip: ""            // hover tooltip
                     property bool checked: false
                     signal clicked()
                     width: 44; height: 44; radius: 22
@@ -175,7 +180,7 @@ Item {
                     ToolTip.delay: 400
                     ToolTip.text: tip + (checked ? "  (on)" : "")
                 }
-                // panel waypoint: an / hien; so nho = so waypoint
+                // waypoint panel: show / hide; badge = waypoint count
                 ToolBtn {
                     label: "⚑"; tip: "Waypoint list"
                     checked: page.showWaypoints
@@ -187,7 +192,7 @@ Item {
                         Text { anchors.centerIn: parent; text: mission.values.count; color: "white"; font.pixelSize: 11; font.bold: true }
                     }
                 }
-                // dat lai bearing = 0, tilt = 0
+                // reset bearing = 0, tilt = 0
                 ToolBtn {
                     visible: page.map !== null && (Math.abs(page.map.bearing) > 0.5 || page.map.tilt > 0.5)
                     label: "⟲N"; tip: "Reset rotation / tilt (right-drag to rotate & tilt)"
@@ -200,7 +205,7 @@ Item {
                     onClicked: if (page.map && page.hasDrone) page.map.center = QtPositioning.coordinate(gps.lat, gps.lon)
                 }
                 ToolBtn { label: "⬇"; tip: "Download offline map"; checked: prefetchPanel.visible; onClicked: prefetchPanel.visible = !prefetchPanel.visible }
-                // vet bay: click = bat / tat; giu = xoa vet hien thi (GPX khong doi)
+                // flight track: click = show / hide; long-press = clear the shown track (GPX files kept)
                 ToolBtn {
                     readonly property var tr: vehicle.track.values
                     label: "〰"
@@ -213,14 +218,14 @@ Item {
                         onClicked: page.showTrack = !page.showTrack
                         onPressAndHold: vehicle.clearTrack()
                     }
-                    Rectangle {                            // cham do: dang ghi (armed)
+                    Rectangle {                            // red dot: recording (armed)
                         visible: parent.tr.recording === true
                         anchors.top: parent.top; anchors.right: parent.right
                         width: 12; height: 12; radius: 6; color: Theme.error
                         border.color: "white"; border.width: 1.5
                     }
                 }
-                // vung cam / han che bay: bat-tat; nhan giu = nap lai file
+                // airspace: show / hide; long-press = reload files
                 ToolBtn {
                     label: "⛔"; tip: "No-fly zones (long-press: reload)"
                     visible: airspace.count > 0
@@ -233,17 +238,17 @@ Item {
                 }
             }
 
-            // ---- Take-off / Land / Gui waypoint (giua duoi) -> Jetson ----
+            // ---- Take-off / Land / Send WP (bottom centre) -> Jetson ----
             FlightCommands {
                 anchors.horizontalCenter: parent.horizontalCenter
-                anchors.bottom: parent.bottom; anchors.bottomMargin: 50   // tren dong trang thai ban do
+                anchors.bottom: parent.bottom; anchors.bottomMargin: 50   // above the map status line
                 z: 30
             }
 
-            // ---- chu thich vung bay (giong cambay.mod.gov.vn): tick de an / hien tung loai ----
+            // ---- airspace legend (as on cambay.mod.gov.vn): checkboxes show / hide each kind ----
             Rectangle {
                 id: zoneLegend
-                visible: airspace.visible && airspace.count > 0     // chua co du lieu vung -> an
+                visible: airspace.visible && airspace.count > 0     // hidden until airspace data is loaded
                 anchors.left: parent.left; anchors.bottom: parent.bottom
                 anchors.leftMargin: 12; anchors.bottomMargin: 48
                 width: legendCol.implicitWidth + 24; height: legendCol.implicitHeight + 20
@@ -253,7 +258,7 @@ Item {
                     anchors.centerIn: parent
                     spacing: 6
                     Repeater {
-                        // luon co 2 loai chinh nhu trang BQP + cac loai khac neu du lieu co
+                        // always the two main kinds, as on the MoD site, plus any other kinds present in the data
                         model: ["restricted", "prohibited"].concat(airspace.kinds.filter(
                                    k => k !== "restricted" && k !== "prohibited"))
                         delegate: Row {
@@ -293,8 +298,53 @@ Item {
                 }
             }
 
-            // ---- trang thai ban do (duoi trai) ----
+            // ---- path legend (bottom left, above the status): flown path on / off, planned path ----
             Rectangle {
+                objectName: "pathLegend"
+                anchors.left: parent.left; anchors.bottom: mapStatus.top; anchors.leftMargin: 12; anchors.bottomMargin: 6
+                width: legendRow.implicitWidth + 16; height: 32; radius: 6
+                color: "#cc161b22"
+                readonly property var tr: vehicle.track.values
+                RowLayout {
+                    id: legendRow
+                    anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 8
+                    spacing: 8
+                    CheckBox {
+                        objectName: "showTrackBox"
+                        checked: page.showTrack
+                        onToggled: page.showTrack = checked
+                        padding: 0
+                        contentItem: RowLayout {
+                            spacing: 6
+                            Item { width: 18 }                         // room for the check indicator
+                            Rectangle { width: 22; height: 4; radius: 2; color: page.trackColor }
+                            Text { text: "Flown path"; color: Theme.text; font.pixelSize: 12 }
+                        }
+                    }
+                    Text {
+                        text: (parent.parent.tr.lengthM || 0).toFixed(0) + " m"
+                        color: Theme.textDim; font.pixelSize: 12
+                    }
+                    Text {
+                        visible: parent.parent.tr.recording === true
+                        text: "● REC"; color: Theme.error; font.pixelSize: 11; font.bold: true
+                    }
+                    Button {
+                        text: "Clear"
+                        implicitHeight: 24; font.pixelSize: 11
+                        enabled: (parent.parent.tr.points || 0) > 0
+                        ToolTip.visible: hovered; ToolTip.text: "Clear the flown path on the map (saved GPX files are kept)"
+                        onClicked: vehicle.clearTrack()
+                    }
+                    Rectangle { width: 1; height: 18; color: Theme.border }
+                    Rectangle { width: 22; height: 3; radius: 1.5; color: Theme.accent }
+                    Text { text: "Planned"; color: Theme.textDim; font.pixelSize: 12 }
+                }
+            }
+
+            // ---- map status (bottom left) ----
+            Rectangle {
+                id: mapStatus
                 anchors.left: parent.left; anchors.bottom: parent.bottom; anchors.margins: 12
                 width: statusText.implicitWidth + 20; height: 28; radius: 6
                 color: "#cc161b22"
@@ -310,7 +360,7 @@ Item {
                 }
             }
 
-            // ---- huong dan che do them diem ----
+            // ---- add-waypoint mode hint ----
             Rectangle {
                 visible: page.addMode
                 anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter; anchors.topMargin: 12
@@ -323,12 +373,12 @@ Item {
                 }
             }
 
-            // ---- nhap toa do (goc tren trai) ----
+            // ---- coordinate entry (top left) ----
             Column {
                 id: searchBox
                 anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 12
                 spacing: 6
-                // khong de len khung dong ho ben phai khi cua so hep
+                // do not overlap the instruments on the right in a narrow window
                 width: Math.max(220, Math.min(380, parent.width - instruments.shownWidth - 48))
 
                 Rectangle {
@@ -341,7 +391,7 @@ Item {
                         TextField {
                             id: coordInput
                             Layout.fillWidth: true
-                            text: mapService.searchDefault          // dien san (gcs.yaml map.search_default)
+                            text: mapService.searchDefault          // prefilled (gcs.yaml map.search_default)
                             placeholderText: "Enter coordinates: lat, lon"
                             placeholderTextColor: Theme.textDim
                             color: Theme.text
@@ -356,7 +406,7 @@ Item {
                     visible: page.searchError !== ""
                     text: page.searchError; color: Theme.error; font.pixelSize: 12
                 }
-                // ghim vua nhap nam trong vung cam / han che?
+                // is the pin inside a prohibited / restricted zone?
                 Text {
                     readonly property string zone: page.pin ? (airspace.revision, airspace.namesAt(page.pin.latitude, page.pin.longitude)) : ""
                     visible: zone !== ""
@@ -364,7 +414,7 @@ Item {
                     text: "⚠ Inside zone: " + zone
                     color: Theme.error; font.pixelSize: 12; font.bold: true; style: Text.Outline; styleColor: "black"
                 }
-                // ghim vua nhap: thong tin + them lam waypoint
+                // pin info + add as waypoint
                 Rectangle {
                     visible: page.pin !== null
                     width: parent.width; height: 44; radius: 8
@@ -403,7 +453,7 @@ Item {
             }
         }
 
-        // ===================== DANH SACH WAYPOINT =====================
+        // ===================== WAYPOINT LIST =====================
         WaypointPanel {
             visible: page.showWaypoints
             Layout.preferredWidth: page.width < 1100 ? 290 : 340
@@ -435,13 +485,13 @@ Item {
 
             plugin: Plugin {
                 name: "osm"
-                // o ban do tu tile server localhost (cache .mbtiles)
+                // tiles from the localhost tile server (.mbtiles cache)
                 PluginParameter {
                     name: "osm.mapping.custom.host"
                     value: "http://127.0.0.1:" + mapService.port + "/" + page.layerId + "/%z/%x/%y.png"
                 }
                 PluginParameter { name: "osm.mapping.providersrepository.disabled"; value: true }
-                // cache dia QtLocation: rieng tung lop, dung luong nho (cache chinh la .mbtiles)
+                // QtLocation disk cache: separate per layer and small (the real cache is the .mbtiles file)
                 PluginParameter { name: "osm.mapping.cache.directory"; value: mapService.qtCacheDir + "/" + page.layerId }
                 PluginParameter { name: "osm.mapping.cache.disk.size"; value: 20000000 }
                 PluginParameter { name: "osm.mapping.highdpi_tiles"; value: false }
@@ -450,18 +500,18 @@ Item {
             Component.onCompleted: {
                 for (var i = 0; i < supportedMapTypes.length; i++)
                     if (supportedMapTypes[i].style === MapType.CustomMap) activeMapType = supportedMapTypes[i]
-                rebuildTrack()                       // vet da co truoc khi tao Map (vd doi lop)
+                rebuildTrack()                       // track recorded before the Map was created (e.g. after a layer change)
             }
 
-            // ---- dieu khien: keo trai = pan, cuon / pinch = zoom,
-            //      keo phai: dx -> bearing, dy -> tilt (nut ⟲N dat lai) ----
+            // ---- controls: left drag = pan, wheel / pinch = zoom,
+            //      right drag: dx -> bearing, dy -> tilt (⟲N button resets) ----
             DragHandler {
                 target: null
                 onTranslationChanged: (delta) => map.pan(-delta.x, -delta.y)
             }
             DragHandler {
                 target: null
-                acceptedButtons: Qt.RightButton           // tap phai (xoa waypoint) do TapHandler rieng
+                acceptedButtons: Qt.RightButton           // right tap (delete waypoint) is a separate TapHandler
                 onTranslationChanged: (delta) => {
                     map.bearing = (map.bearing + delta.x * 0.4 + 360) % 360
                     map.tilt = Math.max(map.minimumTilt, Math.min(map.maximumTilt, map.tilt - delta.y * 0.3))
@@ -488,7 +538,7 @@ Item {
                 }
             }
 
-            // ---- vung cam / han che bay: to mau dac nhu cambay.mod.gov.vn (do = cam, cam = han che) ----
+            // ---- airspace: filled as on cambay.mod.gov.vn (red = prohibited, orange = restricted) ----
             MapItemView {
                 model: airspace.visible ? airspace.zones : []
                 delegate: MapPolygon {
@@ -519,7 +569,7 @@ Item {
                 }
             }
 
-            // ---- duong bay ----
+            // ---- flight path ----
             MapPolyline {
                 line.width: 3
                 line.color: Theme.accent
@@ -532,7 +582,7 @@ Item {
                 }
             }
 
-            // ---- waypoint: model = so luong -> delegate khong bi tao lai khi keo ----
+            // ---- waypoints: model = count, so delegates are not recreated while dragging ----
             MapItemView {
                 model: mission.items.length
                 delegate: MapQuickItem {
@@ -553,6 +603,18 @@ Item {
                             anchors.top: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter
                             text: wpItem.wp.alt + " m"; color: "white"; font.pixelSize: 12; style: Text.Outline
                         }
+                        // pick task badge: A = automatic hook, M = manual hook
+                        Rectangle {
+                            visible: (wpItem.wp.task || "none") !== "none"
+                            anchors.left: parent.right; anchors.leftMargin: -8; anchors.top: parent.top; anchors.topMargin: -6
+                            width: 18; height: 18; radius: 9
+                            color: Theme.ok; border.color: "white"; border.width: 1.5
+                            Text {
+                                anchors.centerIn: parent
+                                text: wpItem.wp.task === "pick_manual" ? "M" : "A"
+                                color: "white"; font.pixelSize: 10; font.bold: true
+                            }
+                        }
                         DragHandler {
                             id: wpDrag
                             target: null
@@ -569,7 +631,7 @@ Item {
                 }
             }
 
-            // ---- Ghim toa do vua nhap ----
+            // ---- pin from the coordinate box ----
             MapQuickItem {
                 visible: page.pin !== null
                 coordinate: page.pin || QtPositioning.coordinate(0, 0)
@@ -597,12 +659,12 @@ Item {
                 }
             }
 
-            // ---- vet bay GPS: 1 MapPolyline / doan (1 doan = 1 lan arm).
+            // ---- GPS flight track: one MapPolyline per segment (one segment per arm).
             //      vehicle.trackPath: appended -> addCoordinate; reset -> rebuildTrack() ----
             property var trackLines: []
             Component {
                 id: trackLineComp
-                MapPolyline { z: 15; line.width: 3; line.color: "#2f9bff"; visible: page.showTrack }
+                MapPolyline { z: 15; line.width: 4; line.color: page.trackColor; visible: page.showTrack }
             }
             function trackLine(i) {
                 while (trackLines.length <= i) {
@@ -633,17 +695,17 @@ Item {
             }
 
             // ---- drone ----
-            //  coordinate = vi tri GPS (bong tren mat dat).
-            //  tilt <= 5 do : anh drone_top.png, rotation = heading - bearing.
-            //  tilt  > 5 do : EiuDrone (View3D), camera cung goc tilt / bearing voi ban do; roll / pitch tu attitude.
-            //  lift (px) = altRel / mpp * sin(tilt): drone ve cao hon bong, noi bang cot do cao.
-            //  kich thuoc: ti le theo ban do = kich thuoc that (spanM) / mpp x exaggeration, gioi han [minPx, maxPx].
+            //  coordinate = GPS position (shadow on the ground).
+            //  tilt <= 5 deg: drone_top.png, rotation = heading - bearing.
+            //  tilt  > 5 deg: EiuDrone (View3D), camera at the map tilt / bearing; roll / pitch from attitude.
+            //  lift (px) = altRel / mpp * sin(tilt): the drone is drawn above its shadow, joined by an altitude stem.
+            //  size: follows the map scale = real size (spanM) / mpp x exaggeration, clamped to [minPx, maxPx].
             MapQuickItem {
                 id: droneMarker
                 visible: page.hasDrone
                 coordinate: QtPositioning.coordinate(page.gps.lat || 0, page.gps.lon || 0)
-                // noi suy vi tri giua cac mau (UI 5 Hz, Jetson 2 Hz); tat cho den khi co vi tri dau tien
-                // (tranh animate tu (0, 0))
+                // interpolate between samples (UI 5 Hz, Jetson 2 Hz); disabled until the first position
+                // (avoids animating from (0, 0))
                 property bool smoothReady: false
                 Timer { running: page.hasDrone; interval: 500; onTriggered: droneMarker.smoothReady = true }
                 Connections { target: page; function onHasDroneChanged() { if (!page.hasDrone) droneMarker.smoothReady = false } }
@@ -655,23 +717,23 @@ Item {
                 z: 20
                 sourceItem: Item {
                     id: droneIcon
-                    readonly property real spanM: 0.9                   // be ngang khung drone_top.png (m)
+                    readonly property real spanM: 0.9                   // width covered by drone_top.png (m)
                     readonly property real exaggeration: 12
                     readonly property real minPx: 24
                     readonly property real maxPx: 240
-                    // box: khung ve; drone (anh 2D) chiem 0.75 box
+                    // box: drawing frame; the 2D drone image fills 0.75 of it
                     readonly property real box: Math.max(minPx, Math.min(maxPx, spanM / mpp * exaggeration / 0.75))
                     readonly property var att: vehicle.attitude.values
                     readonly property real heading: att.valid ? att.heading : (page.fl.heading || 0)
                     readonly property real alt: Math.max(0, page.fl.altRel || 0)
-                    // m/px (Web Mercator, o 256 px) tai vi do drone
+                    // m/px (Web Mercator, 256 px tiles) at the drone latitude
                     readonly property real mpp: 156543.03392 * Math.cos((page.gps.lat || 0) * Math.PI / 180)
                                                / Math.pow(2, map.zoomLevel)
                     readonly property real lift: Math.min(600, alt / mpp * Math.sin(map.tilt * Math.PI / 180))
                     readonly property bool view3d: map.tilt > 5
                     width: box; height: box + lift
 
-                    // bong (diem GPS) + cot do cao
+                    // shadow (GPS point) + altitude stem
                     Rectangle {
                         visible: droneIcon.lift > 3
                         width: droneIcon.box * 0.35; height: width * Math.max(0.25, Math.cos(map.tilt * Math.PI / 180)); radius: width / 2
@@ -685,7 +747,7 @@ Item {
                         color: "#2ea043"
                     }
 
-                    // nhan do cao
+                    // altitude label
                     Rectangle {
                         visible: droneIcon.lift > 3 && droneIcon.alt >= 0.3
                         x: droneIcon.box - 14; y: droneIcon.box / 2 - height / 2
@@ -699,19 +761,19 @@ Item {
                         }
                     }
 
-                    // --- tilt <= 5: anh 2D ---
+                    // --- tilt <= 5: 2D image ---
                     Item {
                         visible: !droneIcon.view3d
                         width: droneIcon.box * 0.75; height: width
                         x: (droneIcon.box - width) / 2; y: (droneIcon.box - height) / 2
                         transformOrigin: Item.Center
                         rotation: droneIcon.heading - map.bearing
-                        Image {                              // halo ve san trong PNG (add_halo.py)
+                        Image {                              // halo baked into the PNG (add_halo.py)
                             anchors.fill: parent
                             source: appInfo.imagesUrl + "drone_top.png"
                             smooth: true; mipmap: true
                         }
-                        Canvas {                             // chevron huong mui
+                        Canvas {                             // heading chevron
                             width: 18; height: 12
                             anchors.horizontalCenter: parent.horizontalCenter
                             y: -10
@@ -727,7 +789,7 @@ Item {
                         }
                     }
 
-                    // --- tilt > 5: mo hinh 3D ---
+                    // --- tilt > 5: 3D model ---
                     View3D {
                         visible: droneIcon.view3d
                         width: droneIcon.box; height: droneIcon.box
@@ -737,7 +799,7 @@ Item {
                             antialiasingMode: SceneEnvironment.MSAA
                             antialiasingQuality: SceneEnvironment.High
                         }
-                        // camera: goc ngang (90 - tilt) do, nhin ve phia tren man hinh (= huong bearing)
+                        // camera: elevation (90 - tilt) deg, looking towards the top of the screen (= bearing)
                         OrthographicCamera {
                             id: iconCam
                             readonly property real elev: 90 - map.tilt
@@ -748,13 +810,13 @@ Item {
                         }
                         DirectionalLight { eulerRotation.x: -60; eulerRotation.y: 25; brightness: 1.4 }
                         DirectionalLight { eulerRotation.x: -20; eulerRotation.y: 200; brightness: 0.5 }
-                        // scene: X = Dong, Y = len, -Z = Bac; yaw = heading - bearing
+                        // scene: X = East, Y = up, -Z = North; yaw = heading - bearing
                         Node {
                             eulerRotation.y: 90 - (droneIcon.heading - map.bearing)
                             Node {
-                                eulerRotation.z: droneIcon.att.valid ? droneIcon.att.pitch : 0    // pitch > 0: mui len
+                                eulerRotation.z: droneIcon.att.valid ? droneIcon.att.pitch : 0    // pitch > 0: nose up
                                 Node {
-                                    eulerRotation.x: droneIcon.att.valid ? droneIcon.att.roll : 0  // roll > 0: canh phai xuong
+                                    eulerRotation.x: droneIcon.att.valid ? droneIcon.att.roll : 0  // roll > 0: right wing down
                                     EiuDrone { scale: Qt.vector3d(100, 100, 100) }
                                 }
                             }

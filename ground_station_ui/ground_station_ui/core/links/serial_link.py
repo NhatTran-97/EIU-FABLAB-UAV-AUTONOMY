@@ -1,4 +1,4 @@
-"""Link qua cong serial (radio SiK cam USB)."""
+"""Serial link (USB SiK radio)."""
 
 import serial
 

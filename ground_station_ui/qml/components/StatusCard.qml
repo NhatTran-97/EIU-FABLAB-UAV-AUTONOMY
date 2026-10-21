@@ -1,14 +1,14 @@
 import QtQuick
 import QtQuick.Layouts
 
-// The trang thai: cham mau + ten + dong chinh + dong phu.
+// Status card: coloured dot + title + main line + secondary line.
 Rectangle {
     id: card
     property string title: ""
     property string status: "unknown"     // ok / warn / error / stale / off / none / unknown
     property string value: ""
     property string detail: ""
-    property bool showDot: true            // false: the chi hien so lieu (thong so bay)
+    property bool showDot: true            // false: numbers only (flight values)
 
     width: 200
     height: 78

@@ -15,7 +15,7 @@ class V:
 def test_mode_arm_link_battery():
     v = V()
     a = Announcer(v)
-    assert a.tick() == []                                   # lan dau: chi ghi nho, khong doc
+    assert a.tick() == []                                   # first sample: remembered, not announced
     v.groups['status'].values['mode'] = 'Position'
     assert a.tick() == ['Position mode']
     v.groups['status'].values['armed'] = True
@@ -23,7 +23,7 @@ def test_mode_arm_link_battery():
     v.groups['battery'].values['percent'] = 29
     assert a.tick() == ['Battery 29 percent']
     v.groups['battery'].values['percent'] = 28
-    assert a.tick() == []                                   # cung muc 30 -> khong lap
+    assert a.tick() == []                                   # same 30 % level -> not repeated
     v.groups['battery'].values['percent'] = 19
     assert a.tick() == ['Battery 19 percent']
     v.groups['companion'].values['linkAlive'] = False

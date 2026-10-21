@@ -1,15 +1,15 @@
-"""Vung cam / han che bay: doc tu file, ve len ban do, canh bao waypoint nam trong vung.
+"""Prohibited / restricted airspace: load from files, draw on the map, warn about waypoints inside.
 
-Nguon du lieu (dat file vao thu muc trong gcs.yaml -> airspace.dirs):
-  *.geojson   Polygon / MultiPolygon, hoac Point + properties.radius_m (vung tron).
+Data sources (files in the directories listed in gcs.yaml airspace.dirs):
+  *.geojson   Polygon / MultiPolygon, or Point + properties.radius_m (circle).
               properties: name, kind (prohibited|restricted|danger|ctr|military|other),
-              lower / upper (chuoi tu do, vd "SFC", "500 m"). Ve tay: geojson.io
-              Ban xuat GeoJSON cua OpenAIP (type = so) cung doc duoc.
+              lower / upper (free text, e.g. "SFC", "500 m"). Draw by hand at geojson.io.
+              OpenAIP GeoJSON exports (numeric type) are also supported.
   *.txt *.openair
-              dinh dang OpenAir (AC/AN/AL/AH/DP/V/DC/DA/DB) -- dinh dang chuan cua
-              du lieu vung tro hang khong (AIP), OpenAIP xuat duoc.
+              OpenAir format (AC/AN/AL/AH/DP/V/DC/DA/DB), the standard format for aeronautical
+              airspace data (AIP), exportable from OpenAIP.
 
-Moi vung chi la polygon (lat, lon); vung tron / cung tron duoc chia thanh nhieu diem.
+Every zone is a (lat, lon) polygon; circles and arcs are approximated with points.
 """
 
 import json
@@ -31,7 +31,7 @@ _OPENAIR_CLASS = {
     'P': 'prohibited', 'R': 'restricted', 'Q': 'danger', 'D': 'ctr', 'CTR': 'ctr',
     'C': 'ctr', 'B': 'ctr', 'A': 'ctr',
 }
-# OpenAIP GeoJSON: properties.type la so
+# OpenAIP GeoJSON: properties.type is numeric
 _OPENAIP_TYPE = {1: 'restricted', 2: 'danger', 3: 'prohibited', 4: 'ctr'}
 _KIND_ALIASES = {
     'p': 'prohibited', 'prohibited': 'prohibited', 'cam': 'prohibited', 'no-fly': 'prohibited',
@@ -45,9 +45,9 @@ class Zone:
     __slots__ = ('name', 'kind', 'lower', 'upper', 'polygon', 'source', '_bbox')
 
     def __init__(self, name, kind, polygon, lower='', upper='', source=''):
-        self.name = name or ''          # o luoi tu trang BQP thuong khong co ten
+        self.name = name or ''          # grid cells from the MoD site usually have no name
         self.kind = kind if kind in KINDS else 'other'
-        self.polygon = polygon                       # [(lat, lon), ...] khong lap diem dau
+        self.polygon = polygon                       # [(lat, lon), ...], first point not repeated
         self.lower, self.upper, self.source = str(lower or ''), str(upper or ''), source
         lats = [p[0] for p in polygon]
         lons = [p[1] for p in polygon]
@@ -73,9 +73,9 @@ class Zone:
                 'source': self.source, 'path': [{'lat': a, 'lon': b} for a, b in self.polygon]}
 
 
-# --- hinh hoc -----------------------------------------------------------------------------
+# --- geometry --------------------------------------------------------------------------
 def destination(lat, lon, bearing_deg, dist_m):
-    """Diem cach (lat, lon) dist_m theo huong bearing (do, tinh tu Bac, theo chieu kim dong ho)."""
+    """Point at dist_m from (lat, lon) along bearing (deg from North, clockwise)."""
     d = dist_m / EARTH_R
     b = math.radians(bearing_deg)
     p1, l1 = math.radians(lat), math.radians(lon)
@@ -94,7 +94,7 @@ def bearing_distance(lat1, lon1, lat2, lon2):
 
 
 def arc(lat, lon, radius_m, start_deg, end_deg, clockwise=True):
-    """Cac diem tren cung tron tu start den end (bearing, do)."""
+    """Points on the arc from start to end bearing (deg)."""
     if clockwise:
         sweep = (end_deg - start_deg) % 360.0 or 360.0
     else:
@@ -169,7 +169,7 @@ def _dms(d, m, s):
 def parse_coord(text):
     m = _COORD.search(text)
     if not m:
-        raise ValueError(f'toa do OpenAir khong hop le: {text!r}')
+        raise ValueError(f'invalid OpenAir coordinate: {text!r}')
     lat = _dms(*m.group(1, 2, 3)) * (-1 if m.group(4).upper() == 'S' else 1)
     lon = _dms(*m.group(5, 6, 7)) * (-1 if m.group(8).upper() == 'W' else 1)
     return lat, lon
@@ -225,18 +225,18 @@ def parse_openair(text, source=''):
                 b2, _ = bearing_distance(*center, *p2)
                 cur['pts'].extend(arc(*center, r, b1, b2, clockwise))
         except (ValueError, IndexError) as e:
-            log.warning('%s:%d bo qua dong %r (%s)', source, lineno, raw.strip(), e)
+            log.warning('%s:%d skipped line %r (%s)', source, lineno, raw.strip(), e)
     flush()
     return zones
 
 
 def _split_db(arg):
-    """'DB 21:00:00 N 105:00:00 E, 21:10:00 N 105:10:00 E' -- tach theo toa do thu nhat."""
+    """'DB 21:00:00 N 105:00:00 E, 21:10:00 N 105:10:00 E' -- split at the first coordinate."""
     m = _COORD.search(arg)
     return arg[:m.end()], arg[m.end():].lstrip(' ,')
 
 
-# --- nap ca thu muc -----------------------------------------------------------------------
+# --- load a whole directory ------------------------------------------------------------
 PARSERS = {'.geojson': parse_geojson, '.json': parse_geojson, '.txt': parse_openair, '.openair': parse_openair}
 
 
@@ -253,9 +253,9 @@ def load_dirs(dirs):
             try:
                 got = parser(f.read_text(encoding='utf-8', errors='replace'), source=f.name)
             except Exception as e:
-                log.warning('Khong doc duoc file vung bay %s: %s', f, e)
+                log.warning('Cannot read airspace file %s: %s', f, e)
                 continue
-            log.info('Vung bay: %d vung tu %s', len(got), f.name)
+            log.info('Airspace: %d zones from %s', len(got), f.name)
             zones.extend(got)
     return zones
 

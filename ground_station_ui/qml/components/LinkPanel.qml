@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 
-// 1 link trong tab Links. `info` = 1 phan tu cua links.items (Python LinkManager).
+// One link in the Links tab. `info` = one entry of links.items (Python LinkManager).
 Rectangle {
     id: panel
     property var info: ({})
@@ -26,7 +26,7 @@ Rectangle {
                 color: panel.info.alive ? Theme.ok : (panel.info.isOpen ? Theme.warn : Theme.idle)
             }
             Text { text: panel.info.title; color: Theme.text; font.pixelSize: 16; font.bold: true }
-            Text {                                      // the hep -> cat bot mo ta, giu ten + so lieu
+            Text {                                      // narrow card -> description elided, name and numbers kept
                 text: panel.info.hint; color: Theme.textDim; font.pixelSize: 12
                 Layout.fillWidth: true; Layout.minimumWidth: 0; elide: Text.ElideRight
             }
@@ -45,14 +45,14 @@ Rectangle {
             ComboBox {
                 id: portBox
                 visible: panel.isSerial
-                Layout.fillWidth: true                  // gian theo the; ten cong dai thi cat bot
+                Layout.fillWidth: true                  // stretches with the card; long port names are elided
                 Layout.minimumWidth: 140
                 Layout.maximumWidth: 420
                 model: ports.ports
                 textRole: "label"
                 valueRole: "device"
                 enabled: !panel.info.active
-                // dang ket noi: hien cong dang dung (co the khong con trong danh sach)
+                // connected: show the port in use (it may no longer be listed)
                 displayText: panel.info.active ? panel.info.port : currentText
                 Component.onCompleted: currentIndex = Math.max(0, indexOfValue(panel.info.port))
             }
@@ -80,7 +80,7 @@ Rectangle {
                                                panel.isSerial ? portBox.currentValue : "",
                                                panel.isSerial ? baudBox.currentValue : 0)
                 }
-                // dang bay: ngat link can xac nhan (PX4 mat GCS heartbeat -> failsafe)
+                // in air: disconnecting needs confirmation (PX4 loses the GCS heartbeat -> failsafe)
                 Dialog {
                     id: confirmDisc
                     modal: true; anchors.centerIn: Overlay.overlay

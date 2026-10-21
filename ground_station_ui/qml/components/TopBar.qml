@@ -30,10 +30,10 @@ Rectangle {
         anchors.fill: parent
         anchors.leftMargin: 20
         anchors.rightMargin: 20
-        spacing: bar.width < 1400 ? 14 : 28            // cua so hep -> sat lai (logo nam o dau menu)
+        spacing: bar.width < 1400 ? 14 : 28            // narrow window -> tighter spacing (the logo sits at the top of the menu)
 
 
-        // PX4: link, che do bay, ARMED / DISARMED. Click -> DirectCommandPopup (lenh thang PX4, 915).
+        // PX4: link, flight mode, ARMED / DISARMED. Click -> DirectCommandPopup (direct PX4 commands, 915).
         Rectangle {
             id: px4Chip
             objectName: "px4Chip"
@@ -79,7 +79,7 @@ Rectangle {
                         color: st.armed ? "white" : Theme.textDim; font.pixelSize: 13; font.bold: true
                     }
                 }
-                Text {                               // goi y: bam duoc
+                Text {                               // hint: clickable
                     text: directPopup.opened ? "▴" : "▾"
                     color: Theme.textDim; font.pixelSize: 14
                 }
@@ -94,13 +94,13 @@ Rectangle {
         Item_ {
             label: "GPS"
             value: gps.fix + (gps.satellites > 0 ? " (" + gps.satellites + ")" : "")
-            // trong nha: khong GPS la binh thuong -> mau xam
+            // indoors no GPS is normal -> grey
             valueColor: gps.fixType >= 3 ? Theme.ok
                       : (flightEnv.state.effective === "indoor" ? Theme.textDim
                       : (gps.fixType === 2 ? Theme.warn : Theme.error))
         }
         Item_ {
-            // nguong 25 % warning, 15 % critical (= core/alerts/health.py)
+            // thresholds 25 % warning, 15 % critical (= core/alerts/health.py)
             readonly property string lvl: bat.percent < 0 ? "" : (bat.percent <= 15 ? "crit" : (bat.percent <= 25 ? "warn" : ""))
             label: "Battery"
             value: (lvl === "crit" ? "⛔ " : lvl === "warn" ? "⚠ " : "")
@@ -121,7 +121,7 @@ Rectangle {
 
         Item { Layout.fillWidth: true }
 
-        // ---- Alert Center: so van de; bam -> danh sach ----
+        // ---- Alert Center: problem count; click -> list ----
         Rectangle {
             objectName: "alertButton"
             Layout.preferredHeight: 40

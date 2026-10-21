@@ -1,4 +1,4 @@
-"""Doc toa do nguoi dung nhap (copy tu Google Maps, QGC...)."""
+"""Parse coordinates typed by the user (copied from Google Maps, QGC...)."""
 
 import re
 
@@ -9,7 +9,7 @@ _DECIMAL = re.compile(rf'^\s*({_NUM})\s*°?\s*([NSns])?\s*[,;\s]\s*({_NUM})\s*°
 def parse_latlon(text):
     """'11.052919, 106.666057' / '11.052919 106.666057' / '11.05N, 106.66E' -> (lat, lon).
 
-    Tra ve None neu khong hop le (sai dinh dang hoac ngoai [-90,90] x [-180,180]).
+    Returns None if invalid (bad format or outside [-90,90] x [-180,180]).
     """
     m = _DECIMAL.match(text or '')
     if not m:

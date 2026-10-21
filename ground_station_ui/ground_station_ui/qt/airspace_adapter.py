@@ -1,4 +1,4 @@
-"""AirspaceAdapter: vung cam / han che bay cho QML (ve polygon, canh bao waypoint)."""
+"""AirspaceAdapter: prohibited / restricted airspace for QML (polygons, waypoint warnings)."""
 
 from pathlib import Path
 
@@ -7,7 +7,7 @@ from PySide6.QtCore import Property, QObject, QSettings, Signal, Slot
 from ground_station_ui.core.maps.airspace import load_dirs, zones_at
 from ground_station_ui.paths import data_path
 
-# Thu tu ve: vung nhe truoc, vung cam ve sau cung (nam tren) -- giong cambay.mod.gov.vn
+# Draw order: least restrictive first, prohibited last (on top), as on cambay.mod.gov.vn
 KIND_TITLES = {'prohibited': 'No-fly zone', 'military': 'Military area', 'restricted': 'Restricted zone',
                'danger': 'Danger zone', 'ctr': 'Airport zone', 'other': 'Other zone'}
 DRAW_ORDER = {'ctr': 0, 'other': 1, 'danger': 2, 'restricted': 3, 'military': 4, 'prohibited': 5}
@@ -20,7 +20,7 @@ class AirspaceAdapter(QObject):
         super().__init__(parent)
         self._dirs = [str(data_path(d)) for d in cfg.get('dirs', ['data/airspace'])]
         for d in self._dirs[:1]:
-            Path(d).mkdir(parents=True, exist_ok=True)   # thu muc dau: noi dat file vung bay
+            Path(d).mkdir(parents=True, exist_ok=True)   # first directory: where airspace files are placed
         self._settings = QSettings()
         self._visible = self._settings.value('airspace/visible', True, type=bool)
         hidden = self._settings.value('airspace/hiddenKinds', [], type=list)
@@ -41,7 +41,7 @@ class AirspaceAdapter(QObject):
 
     @Slot(float, float, result=str)
     def namesAt(self, lat, lon):
-        """'' neu (lat, lon) khong nam trong vung nao, nguoc lai ten cac vung."""
+        """'' if (lat, lon) is outside every zone, otherwise the zone names."""
         names = []
         for z in sorted(zones_at(self._zones, lat, lon), key=lambda z: -DRAW_ORDER.get(z.kind, 1)):
             n = z.name or KIND_TITLES.get(z.kind, z.kind)
@@ -51,7 +51,7 @@ class AirspaceAdapter(QObject):
 
     @Slot(str)
     def toggleKind(self, kind):
-        """An / hien 1 loai vung (o tick trong chu thich)."""
+        """Show / hide one zone kind (checkbox in the legend)."""
         if kind in self._hidden_kinds:
             self._hidden_kinds.remove(kind)
         else:
@@ -67,8 +67,8 @@ class AirspaceAdapter(QObject):
 
     zones = Property('QVariantList', lambda self: self._items, notify=changed)
     count = Property(int, lambda self: len(self._items), notify=changed)
-    revision = Property(int, lambda self: self._revision, notify=changed)   # binding namesAt() phu thuoc
-    kinds = Property('QStringList', lambda self: self._kinds, notify=changed)            # loai co trong du lieu
+    revision = Property(int, lambda self: self._revision, notify=changed)   # namesAt() bindings depend on it
+    kinds = Property('QStringList', lambda self: self._kinds, notify=changed)            # kinds present in the data
     hiddenKinds = Property('QStringList', lambda self: self._hidden_kinds, notify=changed)
     dirs = Property('QStringList', lambda self: self._dirs, constant=True)
     visible = Property(bool, lambda self: self._visible, _set_visible, notify=changed)

@@ -1,4 +1,4 @@
-"""TelemetryAdapter: tan so / tuoi message + lich su do thi cho trang Telemetry."""
+"""TelemetryAdapter: message rate / age and plot history for the Telemetry page."""
 
 import time
 
@@ -6,7 +6,7 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from ground_station_ui.core.telemetry.stats import History, MessageStats
 
-# Tin hieu co the ve: ten hien thi -> (group, key)
+# Plottable signals: display name -> (group, key)
 SIGNALS = {
     'Altitude (m)': ('flight', 'altRel', ('LOCAL_POSITION_NED', 'GLOBAL_POSITION_INT')),
     'Ground speed (m/s)': ('flight', 'groundSpeed', ('VFR_HUD',)),
@@ -18,7 +18,7 @@ SIGNALS = {
     'RSSI 915 (dBm)': ('@links', 'px4', ('RADIO_STATUS',)),
     'Gimbal pitch (°)': ('gimbal', 'pitch', ('DRONE_GIMBAL_STATE',)),
 }
-FRESH_S = 2.5     # message nguon cu hon -> bo mau (do thi ngat quang)
+FRESH_S = 2.5     # source message older than this -> sample skipped (gap in the plot)
 
 
 class TelemetryAdapter(QObject):
@@ -51,7 +51,7 @@ class TelemetryAdapter(QObject):
 
     @Slot(str, float, result='QVariantList')
     def series(self, name, window_s):
-        """[[t (s, am = qua khu), gia tri], ...] trong window_s giay gan nhat."""
+        """[[t (s, negative = past), value], ...] over the last window_s seconds."""
         return self.history.series(name, time.monotonic(), window_s)
 
     msgs = Property('QVariantMap', lambda self: self._snap, notify=changed)

@@ -1,11 +1,11 @@
-"""Hinh hoc tu dinh nghia cho trang 3D (Qt Quick 3D) -- thay RViz.
+"""Custom geometry for the 3D page (Qt Quick 3D), replacing RViz.
 
-Du lieu app: ENU (m, Z len). Qt Quick 3D: Y len. Doi he chi o day va View3DPage.qml:
-    scene = (E, U, -N) * SCALE   (1 m = 100 don vi)
+App data is ENU (m, Z up); Qt Quick 3D is Y up. The conversion happens only here and in View3DPage.qml:
+    scene = (E, U, -N) * SCALE   (1 m = 100 units)
 
     import DroneGcs3D
     Model { geometry: LineGrid { sizeM: 20; stepM: 1 } }
-    Model { geometry: Polyline { source: vehicle.trail3d; widthM: 0.05 } }   // tang dan (PathAdapter)
+    Model { geometry: Polyline { source: vehicle.trail3d; widthM: 0.05 } }   // incremental (PathAdapter)
 """
 
 import struct
@@ -15,7 +15,7 @@ from PySide6.QtGui import QVector3D
 from PySide6.QtQml import qmlRegisterType
 from PySide6.QtQuick3D import QQuick3DGeometry
 
-SCALE = 100.0          # 1 m = 100 don vi Qt Quick 3D
+SCALE = 100.0          # 1 m = 100 Qt Quick 3D units
 
 
 def enu_to_scene(e, n, u):
@@ -23,7 +23,7 @@ def enu_to_scene(e, n, u):
 
 
 class _LineGeometry(QQuick3DGeometry):
-    """Co so: nap danh sach diem (x, y, z) da o toa do scene vao GPU."""
+    """Base class: uploads a list of (x, y, z) points, already in scene coordinates, to the GPU."""
 
     def _upload(self, pts, primitive):
         self.clear()
@@ -41,7 +41,7 @@ class _LineGeometry(QQuick3DGeometry):
 
 
 class LineGrid(_LineGeometry):
-    """Luoi san (mat phang E-N, U = 0), canh sizeM met, o stepM met, tam tai goc."""
+    """Ground grid (E-N plane, U = 0), sizeM metres across, stepM metre cells, centred on the origin."""
     changed = Signal()
 
     def __init__(self, parent=None):
@@ -56,8 +56,8 @@ class LineGrid(_LineGeometry):
         pts = []
         for i in range(n + 1):
             t = -half + i * self._step
-            pts += [enu_to_scene(t, -half, 0), enu_to_scene(t, half, 0),     # duong doc (Bac-Nam)
-                    enu_to_scene(-half, t, 0), enu_to_scene(half, t, 0)]     # duong ngang (Dong-Tay)
+            pts += [enu_to_scene(t, -half, 0), enu_to_scene(t, half, 0),     # north-south lines
+                    enu_to_scene(-half, t, 0), enu_to_scene(half, t, 0)]     # east-west lines
         self._upload(pts, QQuick3DGeometry.PrimitiveType.Lines)
 
     def _set_size(self, v):
@@ -77,8 +77,8 @@ class LineGrid(_LineGeometry):
 
 
 def ribbon_triangles(pts, width):
-    """Polyline (scene) -> tam giac: moi doan = 2 dai rong `width` vuong goc nhau (mat cat chu thap).
-    Thay cho lineWidth (nhieu backend RHI chi ve 1 px)."""
+    """Polyline (scene) -> triangles: each segment becomes two perpendicular ribbons of `width` (cross
+    section). Replaces lineWidth, which many RHI backends draw as 1 px."""
     h = width / 2
     out = []
     for (x0, y0, z0), (x1, y1, z1) in zip(pts, pts[1:]):
@@ -87,9 +87,9 @@ def ribbon_triangles(pts, width):
         if ln < 1e-9:
             continue
         dx, dy, dz = dx / ln, dy / ln, dz / ln
-        ax, ay, az = dz, 0.0, -dx                       # d x len(Y): huong ngang vuong goc doan
+        ax, ay, az = dz, 0.0, -dx                       # d x up(Y): horizontal direction perpendicular to the segment
         la = (ax * ax + az * az) ** 0.5
-        if la < 1e-6:                                    # doan thang dung -> lay truc X
+        if la < 1e-6:                                    # vertical segment -> use the X axis
             ax, ay, az, la = 1.0, 0.0, 0.0, 1.0
         ax, ay, az = ax / la, ay / la, az / la
         bx, by, bz = dy * az - dz * ay, dz * ax - dx * az, dx * ay - dy * ax   # d x a
@@ -101,11 +101,11 @@ def ribbon_triangles(pts, width):
 
 
 class Polyline(_LineGeometry):
-    """Polyline ENU (m). widthM > 0: dai rong widthM (can cullMode NoCulling); 0: Lines 1 px.
+    """ENU polyline (m). widthM > 0: ribbon of width widthM (needs cullMode NoCulling); 0: 1 px Lines.
 
-    Nguon:
-      source: PathAdapter -- appended: noi tam giac cua doan moi vao buffer; reset: dung lai toan bo.
-      points: [[e, n, u], ...] -- dat ca duong (duong tinh).
+    Sources:
+      source: PathAdapter -- appended: append the new segments' triangles to the buffer; reset: rebuild.
+      points: [[e, n, u], ...] -- set the whole path (static paths).
     """
     changed = Signal()
 
@@ -120,12 +120,12 @@ class Polyline(_LineGeometry):
         self._hi = [float('-inf')] * 3
         self._rebuild()
 
-    # --- dung buffer ---------------------------------------------------------------------
+    # --- buffer building ---------------------------------------------------------------
     def _piece(self, a, b):
-        """Hinh hoc cho 1 doan a -> b (scene)."""
+        """Geometry for one segment a -> b (scene)."""
         if self._width > 0:
             return ribbon_triangles([a, b], self._width * SCALE)
-        return [a, b]                                       # Lines: moi doan 2 dinh
+        return [a, b]                                       # Lines: two vertices per segment
 
     def _add_piece(self, pts):
         if not pts:
@@ -163,7 +163,7 @@ class Polyline(_LineGeometry):
         if n == 0:
             self._buf = bytearray()
 
-    # --- nguon tang dan (PathAdapter) -------------------------------------------------------
+    # --- incremental source (PathAdapter) ----------------------------------------------------
     def _from_source(self):
         log = self._source.log if self._source is not None else None
         self._segs = [[enu_to_scene(*p) for p in seg] for seg in log.segments] if log else []
@@ -193,7 +193,7 @@ class Polyline(_LineGeometry):
         self._from_source()
         self.changed.emit()
 
-    # --- dat ca duong ------------------------------------------------------------------------
+    # --- whole path ---------------------------------------------------------------------------
     def _set_points(self, pts):
         self._points = [tuple(float(c) for c in p) for p in (pts or [])]
         self._segs = [[enu_to_scene(*p) for p in self._points]]
@@ -212,6 +212,6 @@ class Polyline(_LineGeometry):
 
 
 def register():
-    """Goi 1 lan truoc khi nap QML."""
+    """Call once before loading QML."""
     for cls in (LineGrid, Polyline):
         qmlRegisterType(cls, 'DroneGcs3D', 1, 0, cls.__name__)

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Tao loi tat "EIU Drone GCS" trong menu ung dung (chi cho user hien tai, khong can sudo):
+# Add an "EIU Drone GCS" launcher to the application menu (current user only, no sudo):
 #   icon   -> ~/.local/share/icons/hicolor/<size>/apps/drone-gcs.png
 #   desktop-> ~/.local/share/applications/drone-gcs.desktop
-# Chay trong moi truong python dung de chay app (vd: conda activate drone_env), hoac PYTHON=...
-# Go bo: ./install_desktop.sh --uninstall
+# Run it in the Python environment used for the app (e.g. conda activate drone_env), or set PYTHON=...
+# Uninstall: ./install_desktop.sh --uninstall
 set -euo pipefail
 
 PKG_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,7 +14,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     rm -f "$DESKTOP"
     for s in 32 48 64 128 256 512; do rm -f "$ICONS/${s}x${s}/apps/drone-gcs.png"; done
     update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
-    echo "Da go loi tat EIU Drone GCS"; exit 0
+    echo "Removed the EIU Drone GCS launcher"; exit 0
 fi
 
 PYTHON="${PYTHON:-$(command -v python3 || command -v python)}"
@@ -36,5 +36,5 @@ StartupWMClass=drone-gcs
 DESK
 gtk-update-icon-cache -f -t "$ICONS" 2>/dev/null || true
 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
-echo "Da tao loi tat: $DESKTOP"
+echo "Created launcher: $DESKTOP"
 echo "  python: $PYTHON"

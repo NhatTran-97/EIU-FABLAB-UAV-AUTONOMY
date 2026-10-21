@@ -1,4 +1,4 @@
-"""Test ban do offline (MBTiles, tile server, tai truoc) va soan mission -- khong can mang that."""
+"""Offline map (MBTiles, tile server, prefetch) and mission editing tests -- no real network needed."""
 
 import threading
 import time
@@ -17,7 +17,7 @@ from ground_station_ui.core.mission.mission import Mission
 
 @pytest.fixture
 def upstream():
-    """Nguon online gia: tra ve bytes 'z/x/y', dem so request."""
+    """Fake online source: returns the bytes 'z/x/y' and counts requests."""
     hits = []
 
     class H(BaseHTTPRequestHandler):
@@ -44,9 +44,9 @@ def get(url):
 
 
 def test_tile_math():
-    # Ho Chi Minh, zoom 16 -- doi chieu cong thuc doc lap: y = (1 - ln(tan(pi/4 + lat/2)) / pi) / 2 * 2^z
+    # Ho Chi Minh City, zoom 16 -- checked against the independent formula y = (1 - ln(tan(pi/4 + lat/2)) / pi) / 2 * 2^z
     assert lonlat_to_tile(106.6297, 10.8231, 16) == (52179, 30785)
-    # Dem nhanh phai khop liet ke tung o, va vung phai phu ca 2 goc bbox
+    # The fast count must match the enumeration, and the area must cover both bbox corners
     bbox = (106.62, 10.82, 106.63, 10.83)
     cells = set(tiles_in_bbox(*bbox, 16))
     assert count_tiles(*bbox, 16, 16) == len(cells)
@@ -58,7 +58,7 @@ def test_mbtiles_roundtrip_uses_tms_rows(tmp_path):
     db.put(16, 52179, 30785, b'img')
     assert db.get(16, 52179, 30785) == b'img'
     row = db._db.execute('SELECT tile_row FROM tiles').fetchone()[0]
-    assert row == (1 << 16) - 1 - 30785          # MBTiles luu theo TMS
+    assert row == (1 << 16) - 1 - 30785          # MBTiles stores TMS rows
     assert db.stats()[0] == 1
 
 
@@ -70,14 +70,14 @@ def test_server_downloads_once_then_serves_from_cache(tmp_path, upstream):
         tile = f'http://127.0.0.1:{port}/sat/16/52179/30785.png'
         assert get(tile) == b'/16/52179/30785'
         assert get(tile) == b'/16/52179/30785'
-        assert len(hits) == 1                        # lan 2 lay tu cache .mbtiles
+        assert len(hits) == 1                        # second request served from the .mbtiles cache
         assert server.stats['downloaded'] == 1 and server.stats['cache_hits'] == 1
     finally:
         server.stop()
 
 
 def test_offline_serves_cache_and_404_for_missing(tmp_path):
-    # Nguon online khong ton tai = mat mang
+    # Unreachable online source = network down
     server = TileServer([{'id': 'sat', 'url': 'http://127.0.0.1:9/{z}/{x}/{y}'}], tmp_path)
     server.layers['sat'].cache.put(15, 1, 2, b'cached')
     port = server.start()
@@ -86,7 +86,7 @@ def test_offline_serves_cache_and_404_for_missing(tmp_path):
         with pytest.raises(urllib.error.HTTPError) as e:
             get(f'http://127.0.0.1:{port}/sat/15/9/9.png')
         assert e.value.code == 404
-        assert not server.online                     # tam ngung tai online, khong cho timeout
+        assert not server.online                     # online downloads paused, no timeout wait
     finally:
         server.stop()
 
@@ -113,7 +113,7 @@ def test_mission_edit():
     m.add(10.1, 106.1)
     m.insert(1, 10.05, 106.05)
     assert [wp['seq'] for wp in m.items] == [1, 2, 3]
-    assert m.items[1]['alt'] == 25                   # chen giua: lay do cao diem truoc
+    assert m.items[1]['alt'] == 25                   # inserted in the middle: altitude taken from the previous point
     m.move(2, 10.2, 106.2)
     m.set_altitude(0, 40)
     m.remove(1)
@@ -124,7 +124,7 @@ def test_mission_edit():
 
 
 def test_hybrid_composes_base_and_overlays(tmp_path):
-    """Hybrid = nen (JPEG) + overlay trong suot (PNG); moi nguon cache rieng, offline van ghep duoc."""
+    """Hybrid = base (JPEG) + transparent overlay (PNG); each source cached separately, merging works offline."""
     import io
     from PIL import Image
 
@@ -135,7 +135,7 @@ def test_hybrid_composes_base_and_overlays(tmp_path):
 
     base, label = img('JPEG', (0, 0, 255)), img('PNG', (255, 0, 0, 0))
     label_img = Image.open(io.BytesIO(label)).convert('RGBA')
-    for dx in range(8):                                      # 1 net "chu" do 8x8, con lai trong suot
+    for dx in range(8):                                      # one red 8x8 "text" stroke, the rest transparent
         for dy in range(8):
             label_img.putpixel((8 + dx, 8 + dy), (255, 0, 0, 255))
     buf = io.BytesIO(); label_img.save(buf, 'PNG'); label = buf.getvalue()
@@ -159,12 +159,12 @@ def test_hybrid_composes_base_and_overlays(tmp_path):
     try:
         out = Image.open(io.BytesIO(server.get_tile('hybrid', 17, 1, 2))).convert('RGB')
         r, g, b = out.getpixel((11, 11))
-        assert r > 200 and b < 60                            # net nhan de len anh nen
+        assert r > 200 and b < 60                            # label stroke drawn over the base image
         r, g, b = out.getpixel((100, 100))
-        assert b > 200 and r < 60                            # cho trong suot -> thay anh nen
+        assert b > 200 and r < 60                            # transparent area -> base image shows through
         assert server.layers['sat'].cache.has(17, 1, 2) and server.layers['labels'].cache.has(17, 1, 2)
         assert [s.id for s in server.sources('hybrid')] == ['sat', 'labels']
-        up.shutdown()                                        # mat mang: van ghep tu cache
+        up.shutdown()                                        # offline: still composited from the cache
         assert server.get_tile('hybrid', 17, 1, 2) is not None
         pre = Prefetcher(server)
         assert pre.start('hybrid', (106.62, 10.82, 106.63, 10.83), 15, 15, 100) == ''
@@ -182,18 +182,18 @@ def test_parse_latlon():
     assert parse_latlon('11.052919;106.666057') == (11.052919, 106.666057)
     assert parse_latlon('33.86S, 151.21E') == (-33.86, 151.21)
     assert parse_latlon('-33.86, -70.5') == (-33.86, -70.5)
-    assert parse_latlon('106.666057, 11.052919') is None        # nhap nguoc (lon, lat): vi do > 90
+    assert parse_latlon('106.666057, 11.052919') is None        # entered reversed (lon, lat): latitude > 90
     assert parse_latlon('91, 10') is None and parse_latlon('10, 181') is None
     assert parse_latlon('abc') is None and parse_latlon('') is None and parse_latlon('11.05') is None
 
 
 def test_count_tiles_is_capped_for_huge_areas():
-    # Ca the gioi zoom 14-19: hang ty o -> phai dung som, khong tran int32 cua Qt
+    # Whole world at zoom 14-19: billions of tiles -> must stop early, no Qt int32 overflow
     assert count_tiles(-179, -80, 179, 80, 14, 19, limit=300000) == 300001
 
 
 def test_client_closing_connection_is_silent(tmp_path, capsys):
-    """QtLocation huy request khi keo ban do -> khong duoc in traceback BrokenPipe."""
+    """QtLocation cancels requests while panning -> no BrokenPipe traceback must be printed."""
     import socket
     server = TileServer([{'id': 'sat', 'url': 'http://127.0.0.1:9/{z}/{x}/{y}'}], tmp_path)
     server.layers['sat'].cache.put(15, 1, 2, b'x' * 200000)
@@ -203,9 +203,9 @@ def test_client_closing_connection_is_silent(tmp_path, capsys):
             s = socket.create_connection(('127.0.0.1', port))
             s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b'\x01\x00\x00\x00\x00\x00\x00\x00')
             s.sendall(b'GET /sat/15/1/2.png HTTP/1.0\r\n\r\n')
-            s.close()                                    # dong ngay, khong doc
+            s.close()                                    # close immediately without reading
         time.sleep(0.5)
-        assert get(f'http://127.0.0.1:{port}/sat/15/1/2.png') == b'x' * 200000   # server van song
+        assert get(f'http://127.0.0.1:{port}/sat/15/1/2.png') == b'x' * 200000   # server still alive
     finally:
         server.stop()
     err = capsys.readouterr().err
@@ -232,12 +232,12 @@ def test_api_key_comes_from_env(tmp_path, upstream, monkeypatch):
 def test_layer_without_key_is_dropped_unless_cached(tmp_path, upstream, monkeypatch):
     base, hits = upstream
     monkeypatch.delenv('TEST_MAP_KEY', raising=False)
-    # chua co key, chua co cache -> bo ca lop nguon lan lop ghep
+    # no key, no cache -> both the source layer and the composite layer are dropped
     ts = TileServer(_keyed_layers(base), tmp_path)
     assert not {'az', 'az_img', 'az_road'} & set(ts.layers)
     ts.stop()
 
-    # da co cache tu truoc (vd tai luc con key) -> van dung offline, khong goi nguon
+    # cache from earlier (e.g. downloaded while a key was set) -> still usable offline, source never called
     MBTiles(tmp_path / 'az_img.mbtiles').put(3, 1, 2, b'cached')
     ts = TileServer(_keyed_layers(base), tmp_path)
     assert 'az' in ts.layers and 'az_road' not in ts.layers
@@ -249,7 +249,7 @@ def test_layer_without_key_is_dropped_unless_cached(tmp_path, upstream, monkeypa
 
 
 def test_single_tile_timeout_does_not_take_server_offline(tmp_path, monkeypatch):
-    """O zoom sau: 1 o tai cham (timeout) KHONG duoc lam ca server ngung tai 30 s (moi o khac 404)."""
+    """At deep zoom, one slow tile (timeout) must NOT pause the whole server for 30 s (every other tile would 404)."""
     import socket
 
     from ground_station_ui.core.maps import tile_server
@@ -260,8 +260,8 @@ def test_single_tile_timeout_does_not_take_server_offline(tmp_path, monkeypatch)
     def fake_urlopen(*a, **kw):
         raise next(errors)
     monkeypatch.setattr(tile_server.urllib.request, 'urlopen', fake_urlopen)
-    for i in range(3):                               # timeout ket noi / doc, reset: loi rieng 1 o
+    for i in range(3):                               # connect / read timeout, reset: error specific to one tile
         assert server.fetch_upstream(server.layers['sat'], 19, i, 0) is None
         assert server.online
     assert server.fetch_upstream(server.layers['sat'], 19, 9, 0) is None
-    assert not server.online                         # khong phan giai DNS = mat mang that
+    assert not server.online                         # DNS failure = real network outage

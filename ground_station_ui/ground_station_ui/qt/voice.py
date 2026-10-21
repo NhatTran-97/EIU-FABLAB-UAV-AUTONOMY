@@ -1,7 +1,7 @@
-"""Doc thong bao bang giong noi (Qt TextToSpeech, speech-dispatcher tren Linux).
+"""Voice announcements (Qt TextToSpeech, speech-dispatcher on Linux).
 
-Giong tieng Anh (espeak tieng Viet nghe kem). Khong co engine -> im lang, app van chay.
-Bat / tat: tab Cai dat (nho QSettings).
+English voice (the Vietnamese espeak voice is hard to understand). Without an engine the app stays silent.
+Enabled / disabled in the Settings tab (remembered in QSettings).
 """
 
 import logging
@@ -30,8 +30,8 @@ class VoiceAdapter(QObject):
             if engine:
                 self._tts = QTextToSpeech(engine, self)
                 self._apply_locale()
-        except Exception as e:      # thieu module / engine -> khong co giong noi
-            log.warning('Khong dung duoc giong noi: %s', e)
+        except Exception as e:      # missing module / engine -> no voice
+            log.warning('Voice unavailable: %s', e)
 
     def _apply_locale(self):
         if self._tts is not None:

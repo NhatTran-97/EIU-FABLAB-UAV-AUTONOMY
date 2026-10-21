@@ -1,10 +1,10 @@
 import QtQuick
 
-// Nut "giu 1 giay de xac nhan" (lenh bay: tranh bam nham). Khoa: `lockedText` != "".
+// "Hold 1 s to confirm" button (flight commands: prevents accidental presses). Locked when `lockedText` != "".
 Rectangle {
     id: btn
     property string text: "Hold to confirm"
-    property string lockedText: ""          // != "" -> khoa, hien ly do
+    property string lockedText: ""          // != "" -> locked, shows the reason
     property color tint: Theme.ok
     property int holdMs: 1000
     signal confirmed()

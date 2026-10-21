@@ -1,11 +1,11 @@
-"""Cache o ban do dang MBTiles (SQLite, chuan mo -- mo duoc bang QGIS / GDAL).
+"""Map tile cache in MBTiles format (SQLite, open standard readable by QGIS / GDAL).
 
-Moi lop ban do 1 file .mbtiles. Toa do XYZ (nhu URL web) <-> TMS trong MBTiles: lat nguoc truc y.
-Dung chung giua thread tile server va thread tai truoc -> 1 connection + khoa.
+One .mbtiles file per map layer. XYZ coordinates (as in web URLs) <-> TMS in MBTiles: the y axis is flipped.
+Shared by the tile server thread and the prefetch threads: one connection plus a lock.
 
-Khong de main thread (UI) phai cho khoa: stats() tra so o dem san trong bo nho (khong SELECT
-COUNT), file mo che do WAL + synchronous=NORMAL -> commit khong fsync moi o (tai truoc 4 luong
-khong lam giat UI).
+The main (UI) thread never waits for the lock: stats() returns counters kept in memory (no SELECT COUNT),
+and the file uses WAL + synchronous=NORMAL so commits do not fsync per tile (prefetching with 4 workers
+does not stall the UI).
 """
 
 import sqlite3
@@ -49,7 +49,7 @@ class MBTiles:
                     'SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?',
                     (z, x, xyz_to_tms_row(z, y))).fetchone()
             except sqlite3.ProgrammingError:
-                return None             # da dong (app dang tat)
+                return None             # closed (app shutting down)
         return row[0] if row else None
 
     def has(self, z, x, y):
@@ -74,10 +74,10 @@ class MBTiles:
                     self._count += 1
                 self._db.commit()
             except sqlite3.ProgrammingError:
-                pass        # app dang tat: o tai xong sau khi da dong file -- bo qua
+                pass        # app shutting down: the tile finished downloading after the file was closed; ignore
 
     def stats(self):
-        """(so o, byte). Khong lay khoa; an toan tu main thread."""
+        """(tile count, bytes). Takes no lock; safe from the main thread."""
         size = 0
         for p in (self.path, self.path.with_name(self.path.name + '-wal')):
             try:

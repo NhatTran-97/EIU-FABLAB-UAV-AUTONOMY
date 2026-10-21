@@ -1,4 +1,4 @@
-"""AlertsAdapter: danh sach van de cho QML (Alert Center, System Health, Pre-flight check)."""
+"""AlertsAdapter: problem list for QML (Alert Center, System Health, pre-flight check)."""
 
 from PySide6.QtCore import Property, QObject, Signal
 

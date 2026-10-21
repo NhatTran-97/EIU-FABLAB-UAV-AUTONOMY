@@ -1,16 +1,16 @@
-"""Gui lenh MAVLink COMMAND_LONG co cho ACK + gui lai (Python thuan).
+"""Send MAVLink COMMAND_LONG with ACK wait and retries (pure Python).
 
-    GCS ──COMMAND_LONG(confirmation=0,1,2..)──► dich (Jetson / PX4)
+    GCS ──COMMAND_LONG(confirmation=0,1,2..)──► target (Jetson / PX4)
         ◄──────────── COMMAND_ACK(result) ────┘
-    Khong ACK sau ack_timeout_s -> gui lai (tang `confirmation`); `retries` lan khong ACK lien tiep
-    -> timeout. Moi ACK (ke ca IN_PROGRESS) reset bo dem.
-    IN_PROGRESS roi im lang -> van gui lai de hoi trang thai; dich thay confirmation > 0 khong chay lai
-    lenh, tra IN_PROGRESS hoac ket qua cuoi (khi ACK ket qua bi mat tren radio).
+    No ACK within ack_timeout_s -> resend (incrementing `confirmation`); `retries` silent sends in a row
+    -> timeout. Any ACK (including IN_PROGRESS) resets the counter.
+    Silence after IN_PROGRESS still triggers resends to poll the state; a target seeing confirmation > 0
+    does not rerun the command and replies IN_PROGRESS or the final result (when that ACK was lost).
 
-Lenh nhieu buoc (vd gui thang PX4: ARM -> NAV_TAKEOFF): buoc sau chi gui khi buoc truoc ACCEPTED;
-mot buoc bi tu choi / het han -> ca lenh dung o do.
+Multi-step commands (e.g. direct to PX4: ARM -> NAV_TAKEOFF) send the next step only after the previous
+one is ACCEPTED; a rejected or timed-out step stops the whole command.
 
-Toi da 1 lenh dang cho; lenh moi thay lenh cu. Retry chay trong tick() (main thread).
+At most one pending command; a new one replaces it. Retries run in tick() on the main thread.
 """
 
 import time
@@ -29,7 +29,7 @@ RESULT_TEXT = {
 
 
 class CommandTarget:
-    """Dich cua lenh: link nao + sysid/compid nao (vd Jetson qua radio 433). `name`: hien tren UI."""
+    """Command target: link and sysid/compid (e.g. the Jetson over radio 433). `name` is shown in the UI."""
 
     def __init__(self, link, system, component, ack_timeout_s=1.5, retries=3, name=''):
         self.link = link
@@ -42,9 +42,9 @@ class CommandTarget:
 
 class CommandSender(FactGroup):
     """values: busy, label, state (idle|sending|in_progress|accepted|rejected|denied|unsupported|
-    failed|timeout|no_link|blocked), attempt (so lan gui lien tiep chua nghe gi), retries,
-    route (ten dich), message (ly do blocked), step / steps (lenh nhieu buoc),
-    elapsed (giay tu luc bam den khi co ket qua; -1 = chua xong)."""
+    failed|timeout|no_link|blocked), attempt (consecutive sends without reply), retries,
+    route (target name), message (blocked reason), step / steps (multi-step commands),
+    elapsed (seconds from press to result; -1 = pending)."""
 
     def __init__(self, links):
         super().__init__(busy=False, label='', state='idle', attempt=0, retries=0,
@@ -55,7 +55,7 @@ class CommandSender(FactGroup):
     def attach(self, router):
         router.subscribe('COMMAND_ACK', self.on_ack)
 
-    # --- gui --------------------------------------------------------------------------------
+    # --- send ---------------------------------------------------------------------------
     def send(self, target, command, params=(), label=''):
         self.send_steps(target, [(command, params)], label or str(command))
 
@@ -69,7 +69,7 @@ class CommandSender(FactGroup):
         self._transmit(now)
 
     def block(self, label, route, message):
-        """Lenh khong gui (GCS tu chan: sai trang thai bay, khong co duong gui...)."""
+        """Command not sent (blocked by the GCS: wrong flight state, no route...)."""
         self._pending = None
         self.set(busy=False, label=label, state='blocked', route=route, message=message,
                  attempt=0, step=0, steps=0, elapsed=-1.0)
@@ -93,7 +93,7 @@ class CommandSender(FactGroup):
         p, self._pending = self._pending, None
         self.set(busy=False, state=state, elapsed=round(time.monotonic() - p['started'], 1) if p else -1.0)
 
-    # --- nhan ACK ---------------------------------------------------------------------------
+    # --- ACK handling ---------------------------------------------------------------------
     def on_ack(self, m, link_name):
         p = self._pending
         if p is None or link_name != p['target'].link or m.command != p['steps'][p['i']][0]:
@@ -102,13 +102,13 @@ class CommandSender(FactGroup):
         if m.get_srcSystem() != t.system or m.get_srcComponent() != t.component:
             return
         state = RESULT_TEXT.get(m.result, 'failed')
-        p['silent'] = 0                 # reset bo dem im lang
+        p['silent'] = 0                 # reset the silence counter
         if state == 'in_progress':
             p['sent_at'] = time.monotonic()
             self.set(state='in_progress', attempt=0)
             return
         if state == 'accepted' and p['i'] + 1 < len(p['steps']):
-            p['i'] += 1                 # buoc tiep (ARM -> NAV_TAKEOFF)
+            p['i'] += 1                 # next step (ARM -> NAV_TAKEOFF)
             p['tx'] = 0
             self.set(state='sending', step=p['i'] + 1)
             self._transmit(time.monotonic())
@@ -122,4 +122,4 @@ class CommandSender(FactGroup):
         if p['silent'] >= p['target'].retries:
             self._finish('timeout')
         else:
-            self._transmit(now)         # gui lai / hoi trang thai
+            self._transmit(now)         # resend / poll state

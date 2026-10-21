@@ -1,4 +1,4 @@
-"""Giai ma che do bay PX4 tu HEARTBEAT.custom_mode (px4_custom_mode.h).
+"""Decode the PX4 flight mode from HEARTBEAT.custom_mode (px4_custom_mode.h).
 
 custom_mode = (sub_mode << 24) | (main_mode << 16)
 """

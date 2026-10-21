@@ -3,7 +3,7 @@
 <package format="3">
   <name>ground_station_ui</name>
   <version>0.1.0</version>
-  <description>Ground Control Station (PySide6 + QML): van hanh drone qua 2 radio SiK -- PX4 (915 MHz) va Jetson (433 MHz)</description>
+  <description>Ground Control Station (PySide6 + QML) for operating the drone over two SiK radios: PX4 (915 MHz) and Jetson (433 MHz).</description>
   <maintainer email="nhat.tranduy1997@gmail.com">duynhat</maintainer>
   <license>Apache-2.0</license>
 
@@ -14,7 +14,7 @@
   <exec_depend>python3-serial</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>python3-pil</exec_depend>
-  <!-- PySide6 khong co trong rosdep: pip install -r requirements.txt -->
+  <!-- PySide6 is not in rosdep: pip install -r requirements.txt -->
 
   <test_depend>ament_cmake_pytest</test_depend>
 

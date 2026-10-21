@@ -1,21 +1,23 @@
-"""Tile server cuc bo (127.0.0.1) cho QtLocation -- cach QGC lam ban do offline.
+"""Local tile server (127.0.0.1) for QtLocation, the same approach QGC uses for offline maps.
 
     GET /<layer>/<z>/<x>/<y>.png
-        co trong cache .mbtiles  -> tra ve (offline van chay)
-        chua co + dang co mang   -> tai tu nguon online, LUU vao cache, tra ve
-        chua co + mat mang       -> 404 (o trong)
+        in the .mbtiles cache     -> served (works offline)
+        missing + online          -> downloaded from the online source, STORED in the cache, served
+        missing + offline         -> 404 (empty tile)
 
-Lop ghep (compose, vd Hybrid = ve tinh + nhan duong + dia danh): ghep o cua cac lop nguon
-(moi nguon co cache rieng) thanh 1 anh. Lop nguon co `hidden: true` thi khong hien o nut chon lop.
+Composite layers (compose, e.g. Hybrid = imagery + road labels + places) merge the tiles of their source
+layers (each with its own cache) into one image. Source layers with `hidden: true` are not listed in the
+layer selector.
 
-Nguon can API key (vd Azure Maps): url co {key}, `key_env` = ten key -- lay tu bien moi truong
-cung ten, khong co thi tu config/keys.yaml (file rieng, khong commit).
-Khong co key -> lop chi doc cache (van bay offline duoc); cache cung trong -> bo lop.
+Sources that need an API key (e.g. Azure Maps): the url contains {key} and `key_env` names the key, read
+from the environment variable of that name, or else from config/keys.yaml (private file, not committed).
+Without a key the layer is cache-only (offline flying still works); with an empty cache it is dropped.
 
-Mat mang THAT (khong phan giai DNS / mang khong toi duoc / bi tu choi ket noi) -> tam ngung tai online
-OFFLINE_BACKOFF_S giay de ban do khong cho timeout tung o. Loi rieng 1 o (timeout, reset, SSL, 429...)
-chi lam o do that bai -- KHONG ngung ca server: o zoom sau QtLocation xin rat nhieu o cung luc, 1 o
-cham ma ngung 30 s thi moi o chua cache bi 404 ngay, QtLocation thu 5 lan roi bo han -> mang o trong.
+A REAL network outage (DNS failure, unreachable network, connection refused) pauses online downloads for
+OFFLINE_BACKOFF_S so the map does not wait for a timeout on every tile. Errors specific to one tile
+(timeout, reset, SSL, 429...) fail only that tile and do NOT pause the server: at deep zoom QtLocation
+requests many tiles at once, and pausing 30 s for one slow tile would 404 every uncached tile, QtLocation
+gives up after 5 attempts, and the map stays full of empty tiles.
 """
 
 import errno
@@ -41,7 +43,7 @@ OFFLINE_ERRNOS = (errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN)
 
 
 def is_offline_error(err):
-    """True neu loi la mat mang (khong phai loi cua rieng 1 o)."""
+    """True if the error means the network is down (not a problem with a single tile)."""
     reason = err.reason if isinstance(err, urllib.error.URLError) else err
     if isinstance(reason, (TimeoutError, socket.timeout)):
         return False
@@ -51,15 +53,15 @@ def is_offline_error(err):
 
 
 class MissingKey(Exception):
-    """Lop can API key ma chua co key, cung chua co cache -> an lop (khong phai loi)."""
+    """Layer needs an API key, has none and has no cache -> hide it (not an error)."""
 
 
 class MapLayer:
     def __init__(self, cfg, cache_dir, keys=None):
         self.id = cfg['id']
         self.title = cfg.get('title', self.id)
-        self.url = cfg.get('url', '')                 # rong = chi offline (vd anh drone tu chup)
-        self.compose = list(cfg.get('compose', []))   # lop ghep: [nen, overlay1, overlay2...]
+        self.url = cfg.get('url', '')                 # empty = offline only (e.g. own drone orthophoto)
+        self.compose = list(cfg.get('compose', []))   # composite layer: [base, overlay1, overlay2...]
         self.hidden = bool(cfg.get('hidden', False))
         self.max_zoom = int(cfg.get('max_zoom', 19))
         self.attribution = cfg.get('attribution', '')
@@ -69,14 +71,14 @@ class MapLayer:
         if self.key_env:
             self._key = (os.environ.get(self.key_env) or str((keys or {}).get(self.key_env) or '')).strip()
         if self.key_env and not self._key:
-            self.url = ''               # khong co key -> chi offline tu cache
+            self.url = ''               # no key -> offline from cache only
         self._auth_warned = False
         if not self.compose:
             path = Path(cfg.get('file', f'{self.id}.mbtiles'))
             if not path.is_absolute():
                 path = Path(cache_dir).expanduser() / path
             if self.key_env and not self._key and not path.exists():
-                raise MissingKey(f'chua co {self.key_env} (bien moi truong / config/keys.yaml)')
+                raise MissingKey(f'{self.key_env} not set (environment variable / config/keys.yaml)')
             self.cache = MBTiles(path, name=self.title, readonly=bool(cfg.get('readonly', not self.url)))
 
     def upstream_url(self, z, x, y):
@@ -91,33 +93,33 @@ class TileServer:
             try:
                 layer = MapLayer(cfg, cache_dir, keys)
             except MissingKey as e:
-                log.info('An lop %s: %s', cfg.get('id'), e)
+                log.info('Hiding layer %s: %s', cfg.get('id'), e)
                 no_key.add(cfg.get('id'))
                 continue
-            except Exception as e:      # vd file .mbtiles offline chua co -> bo qua lop do
-                log.warning('Bo qua lop ban do %s: %s', cfg.get('id'), e)
+            except Exception as e:      # e.g. the offline .mbtiles file does not exist yet -> skip that layer
+                log.warning('Skipping map layer %s: %s', cfg.get('id'), e)
                 continue
             self.layers[layer.id] = layer
         for layer in list(self.layers.values()):
             if not layer.compose:
                 continue
             if layer.compose[0] not in self.layers:
-                # mat lop nen (nguon dau tien) thi khong ve duoc gi
+                # without the base layer (first source) nothing can be drawn
                 (log.info if layer.compose[0] in no_key else log.warning)(
-                    'Bo lop ghep %s: thieu lop nen %s', layer.id, layer.compose[0])
+                    'Dropping composite layer %s: missing base layer %s', layer.id, layer.compose[0])
                 del self.layers[layer.id]
                 continue
             missing = [s for s in layer.compose if s not in self.layers]
             if missing:
-                log.warning('Lop ghep %s thieu lop nguon %s', layer.id, missing)
+                log.warning('Composite layer %s is missing source layer %s', layer.id, missing)
                 layer.compose = [s for s in layer.compose if s in self.layers]
         self.stats = {'cache_hits': 0, 'downloaded': 0, 'missing': 0}
         self._offline_until = 0.0
         self._httpd = None
-        self._inflight = {}            # (layer, z, x, y) -> [Event, ket qua]: single-flight
+        self._inflight = {}            # (layer, z, x, y) -> [Event, result]: single-flight
         self._inflight_lock = threading.Lock()
 
-    # --- trang thai mang -------------------------------------------------------------------
+    # --- network state ---------------------------------------------------------------------
     @property
     def online(self):
         return time.monotonic() >= self._offline_until
@@ -125,11 +127,12 @@ class TileServer:
     def mark_offline(self):
         self._offline_until = time.monotonic() + OFFLINE_BACKOFF_S
 
-    # --- lay 1 o ---------------------------------------------------------------------------
+    # --- fetch one tile ---------------------------------------------------------------------
     def fetch_upstream(self, layer, z, x, y):
-        """Tai 1 o tu nguon online va luu cache. None neu loi / mat mang.
+        """Download one tile from the online source and cache it. None on error or when offline.
 
-        Single-flight: tile server va prefetch cung thieu 1 o -> chi 1 request, ben kia doi ket qua.
+        Single-flight: if the tile server and prefetch both miss the same tile, only one request is made
+        and the other caller waits for its result.
         """
         if not layer.url or not self.online or z > layer.max_zoom:
             return None
@@ -158,20 +161,20 @@ class TileServer:
         except urllib.error.HTTPError as e:
             if e.code in (401, 403) and not layer._auth_warned:
                 layer._auth_warned = True
-                log.warning('Lop %s: nguon tu choi (%d) -- kiem tra API key / quota', layer.id, e.code)
-            return None                 # o khong ton tai o nguon (vd vung bien) -- van dang online
+                log.warning('Layer %s: source refused (%d) -- check API key / quota', layer.id, e.code)
+            return None                 # tile does not exist at the source (e.g. at sea) -- still online
         except (urllib.error.URLError, OSError) as e:
             if is_offline_error(e):
                 self.mark_offline()
-            else:                       # 1 o cham / loi -> chi o nay that bai, cac o khac van tai
-                log.debug('Lop %s: o %d/%d/%d loi tam thoi: %s', layer.id, z, x, y, e)
+            else:                       # one slow / failing tile fails alone; other tiles keep loading
+                log.debug('Layer %s: tile %d/%d/%d temporary error: %s', layer.id, z, x, y, e)
             return None
         if data:
             layer.cache.put(z, x, y, data)
         return data
 
     def sources(self, layer_id):
-        """Cac lop co cache that su can tai cho 1 lop (lop ghep -> cac lop nguon)."""
+        """Layers with a real cache needed to serve one layer (composite -> its source layers)."""
         layer = self.layers.get(layer_id)
         if layer is None:
             return []
@@ -192,10 +195,10 @@ class TileServer:
         return data
 
     def _compose(self, layer, z, x, y):
-        from PIL import Image        # chi can khi co lop ghep
+        from PIL import Image        # only needed for composite layers
         parts = [self.get_tile(src, z, x, y) for src in layer.compose]
         if not parts or parts[0] is None:
-            return None                  # khong co anh nen thi khong ve
+            return None                  # nothing to draw without the base image
         img = Image.open(io.BytesIO(parts[0])).convert('RGBA')
         for data in parts[1:]:
             if data:
@@ -204,7 +207,7 @@ class TileServer:
                     ov = ov.resize(img.size)
                 img = Image.alpha_composite(img, ov)
         out = io.BytesIO()
-        # subsampling=0 (4:4:4): khong lam nhoe mau o net chu nhan duong (chi phuc vu localhost)
+        # subsampling=0 (4:4:4): keeps label edges sharp (served to localhost only)
         img.convert('RGB').save(out, 'JPEG', quality=92, subsampling=0)
         return out.getvalue()
 
@@ -231,17 +234,17 @@ class TileServer:
                     self.end_headers()
                     self.wfile.write(data)
                 except (BrokenPipeError, ConnectionResetError):
-                    # QtLocation huy o khong con can (keo / zoom nhanh) -- binh thuong, o da nam trong cache
+                    # QtLocation cancels tiles it no longer needs (fast pan / zoom) -- normal, the tile is already cached
                     pass
 
-            def log_message(self, *args):     # khong in moi request ra terminal
+            def log_message(self, *args):     # do not print every request to the terminal
                 pass
 
         class Server(ThreadingHTTPServer):
             daemon_threads = True
 
             def handle_error(self, request, client_address):
-                # Khong in traceback cho ket noi bi client dong giua chung
+                # no traceback for connections closed by the client mid-request
                 import sys
                 if not isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
                     super().handle_error(request, client_address)

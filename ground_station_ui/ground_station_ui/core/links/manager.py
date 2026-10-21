@@ -1,8 +1,8 @@
-"""LinkManager: tao cac link tu file cau hinh + theo doi suc khoe tung link.
+"""LinkManager: creates links from the configuration and tracks the health of each link.
 
-Tinh trang tung link (khong phai cua drone): da mo chua, co nhan heartbeat tu phia drone
-khong, RSSI (RADIO_STATUS do radio SiK chen vao), so message/giay.
-QML doc qua `links.values.<ten>.<key>` va `links.items` (danh sach cho tab Links).
+Per-link (not per-drone) state: open or not, heartbeat received from the drone side, RSSI
+(RADIO_STATUS injected by the SiK radio), messages per second.
+QML reads `links.values.<name>.<key>` and `links.items` (list for the Links tab).
 """
 
 import time
@@ -17,7 +17,7 @@ ALIVE_TIMEOUT_S = 3.0
 
 
 def sik_rssi_dbm(raw):
-    """RSSI cua radio SiK (0-255) -> dBm, theo tai lieu SiK: raw / 1.9 - 127."""
+    """SiK radio RSSI (0-255) to dBm, per the SiK documentation: raw / 1.9 - 127."""
     return round(raw / 1.9 - 127)
 
 
@@ -64,7 +64,7 @@ class LinkManager(FactGroup):
         elif t == 'RADIO_STATUS':
             st.radio = {'rssiDbm': sik_rssi_dbm(msg.rssi), 'remoteRssiDbm': sik_rssi_dbm(msg.remrssi),
                         'noise': msg.noise, 'remoteNoise': msg.remnoise, 'rxErrors': msg.rxerrors,
-                        'txbuf': msg.txbuf}     # % bo dem phat CON TRONG cua radio duoi dat (chieu len)
+                        'txbuf': msg.txbuf}     # % of FREE transmit buffer in the ground radio (uplink)
 
     def tick(self, now):
         dt = now - self._rate_t0
@@ -76,7 +76,7 @@ class LinkManager(FactGroup):
         values, items = {}, []
         for name, link in self.links.items():
             st = self._stats[name]
-            age = None if st.last_remote_hb is None else round(now - st.last_remote_hb, 1)
+            age = None if st.last_remote_hb is None else now - st.last_remote_hb
             info = {
                 'name': name,
                 'title': link.cfg.get('title', name),
@@ -88,7 +88,7 @@ class LinkManager(FactGroup):
                 'isOpen': link.is_open,
                 'active': link.active,
                 'alive': link.is_open and age is not None and age < ALIVE_TIMEOUT_S,
-                'heartbeatAge': age,
+                'heartbeatAge': None if age is None else round(age),   # whole seconds: changes once per second
                 'msgRate': round(st.rate),
                 'rssiDbm': st.radio.get('rssiDbm'),
                 'remoteRssiDbm': st.radio.get('remoteRssiDbm'),
@@ -96,6 +96,7 @@ class LinkManager(FactGroup):
             }
             values[name] = info
             items.append(info)
-        self.values = values
+        if values != self.values:      # unchanged link state: QML bindings are not re-evaluated
+            self.values = values
+            self.dirty = True
         self.set_items(items)
-        self.dirty = True

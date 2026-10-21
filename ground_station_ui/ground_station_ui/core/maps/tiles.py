@@ -1,4 +1,4 @@
-"""Tinh toan o ban do Web Mercator (XYZ, giong Google / OSM / Esri)."""
+"""Web Mercator tile math (XYZ, as used by Google / OSM / Esri)."""
 
 import math
 
@@ -12,7 +12,7 @@ def lonlat_to_tile(lon, lat, z):
 
 
 def tiles_in_bbox(west, south, east, north, z):
-    """Moi o (x, y) phu vung bbox o muc zoom z."""
+    """Every tile (x, y) covering bbox at zoom z."""
     if not valid_bbox(west, south, east, north):
         return
     x0, y0 = lonlat_to_tile(west, north, z)
@@ -28,9 +28,9 @@ def valid_bbox(west, south, east, north):
 
 
 def count_tiles(west, south, east, north, zmin, zmax, limit=None):
-    """So o trong vung. `limit`: dung dem khi vuot (vung qua lon, vd dang xem ca the gioi)."""
+    """Number of tiles in the area. `limit`: stop counting once exceeded (huge areas, e.g. the whole world)."""
     if not valid_bbox(west, south, east, north):
-        return 0      # vd ban do chua co kich thuoc -> vung khong hop le
+        return 0      # e.g. the map has no size yet -> invalid area
     total = 0
     for z in range(zmin, zmax + 1):
         x0, y0 = lonlat_to_tile(west, north, z)

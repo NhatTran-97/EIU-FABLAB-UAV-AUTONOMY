@@ -1,14 +1,14 @@
 import QtQuick
 
-// La ban: mat so xoay -heading, ky hieu drone co dinh chi len.
+// Compass: the card rotates by -heading, the drone symbol stays fixed pointing up.
 Item {
     id: root
-    property real heading: 0       // do, 0-360
+    property real heading: 0       // deg, 0-360
     property bool valid: false
-    // heading "mo cuon" de animation di duong ngan nhat qua 0/360
+    // unwrapped heading so the animation takes the short way across 0/360
     property real shown: 0
 
-    width: 140; height: 140 + 22     // mat dong ho vuong + 1 dong chu ben duoi
+    width: 140; height: 140 + 22     // square dial + one text line below
 
     onHeadingChanged: {
         var cur = ((shown % 360) + 360) % 360
@@ -33,7 +33,7 @@ Item {
             ctx.fillStyle = "#161b22"
             ctx.beginPath(); ctx.arc(0, 0, r, 0, 2 * Math.PI); ctx.fill()
 
-            // mat so xoay nguoc heading
+            // card rotates opposite to the heading
             ctx.save()
             ctx.rotate(-root.shown * Math.PI / 180)
             ctx.textAlign = "center"; ctx.textBaseline = "middle"
@@ -51,7 +51,7 @@ Item {
                 var ang = (Number(k) - 90) * Math.PI / 180, rr = r * 0.72
                 ctx.save()
                 ctx.translate(Math.cos(ang) * rr, Math.sin(ang) * rr)
-                ctx.rotate(Number(k) * Math.PI / 180)       // chu dung theo mat so
+                ctx.rotate(Number(k) * Math.PI / 180)       // labels stay upright relative to the card
                 ctx.fillStyle = k === "0" ? "#ff453a" : "#e6edf3"
                 ctx.font = "bold " + Math.round(r * 0.2) + "px sans-serif"
                 ctx.fillText(labels[k], 0, 0)
@@ -59,7 +59,7 @@ Item {
             }
             ctx.restore()
 
-            // drone co dinh, mui chi len
+            // fixed drone, nose up
             ctx.fillStyle = root.valid ? "#ff453a" : "#6e7681"
             ctx.beginPath()
             ctx.moveTo(0, -r * 0.42); ctx.lineTo(r * 0.2, r * 0.3); ctx.lineTo(0, r * 0.16); ctx.lineTo(-r * 0.2, r * 0.3)
@@ -68,7 +68,7 @@ Item {
 
             ctx.strokeStyle = "#e6edf3"; ctx.lineWidth = 2
             ctx.beginPath(); ctx.arc(w / 2, h / 2, r, 0, 2 * Math.PI); ctx.stroke()
-            // vach chi huong co dinh o dinh
+            // fixed lubber line at the top
             ctx.fillStyle = "#ffcc00"
             ctx.beginPath(); ctx.moveTo(w / 2, 2); ctx.lineTo(w / 2 - 6, 12); ctx.lineTo(w / 2 + 6, 12); ctx.closePath(); ctx.fill()
         }

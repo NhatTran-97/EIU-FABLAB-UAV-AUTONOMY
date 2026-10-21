@@ -1,12 +1,13 @@
-"""Linh kien chinh hang (STEP -> STL tung khoi bang step2stl.py) -> .glb gon cho build_drone.py.
+"""Real parts (STEP -> per-volume STL via step2stl.py) -> compact .glb for build_drone.py.
 
-    /snap/bin/blender --background --python convert_part.py -- <preset> <thu_muc_stl> <out.glb>
+    /snap/bin/blender --background --python convert_part.py -- <preset> <stl_dir> <out.glb>
     preset: c12     (Skydroid C12, GrabCAD)   -> c12.glb
             x2216   (SunnySky X2216, GrabCAD) -> x2216.glb
             gps_m9n (GPS Holybro M9N)         -> gps_m9n.glb
 
-Ra glb: he truc drone (X = mui, Y = trai, Z = len), met. Moi preset: xoay STEP ve he drone, dat goc,
-gan mau theo so khoi (xem bbox in ra boi step2stl.py), gioi han so tam giac (nhe cho QML).
+Output glb uses drone axes (X = nose, Y = left, Z = up), metres. Each preset rotates the STEP into drone
+axes, sets the origin, assigns colours by volume number (see the bboxes printed by step2stl.py) and caps
+the triangle count (lighter for QML).
 """
 
 import glob
@@ -23,38 +24,38 @@ COLORS = {
     'motor_blue': ((0.08, 0.28, 0.75, 1), 0.8, 0.3),
     'silver': ((0.72, 0.72, 0.74, 1), 0.7, 0.35),
     'copper': ((0.72, 0.42, 0.20, 1), 0.8, 0.35),
-    'c12_body': ((0.085, 0.085, 0.09, 1), 0.1, 0.6),   # vo C12
-    'c12_orange': ((0.95, 0.40, 0.04, 1), 0.0, 0.45),  # vien cam quanh mat kinh / nap pitch
-    'glass': ((0.02, 0.04, 0.09, 1), 0.9, 0.05),       # mat kinh ong kinh
+    'c12_body': ((0.085, 0.085, 0.09, 1), 0.1, 0.6),   # C12 housing
+    'c12_orange': ((0.95, 0.40, 0.04, 1), 0.0, 0.45),  # orange trim around the lens face / pitch caps
+    'glass': ((0.02, 0.04, 0.09, 1), 0.9, 0.05),       # lens glass
 }
 
 PRESETS = {
-    # STEP: truoc = +Y, len = +Z, goc = mat tren tam treo. -> xoay -90 do quanh Z (truoc -> +X).
+    # STEP: front = +Y, up = +Z, origin = top of the mount plate -> rotate -90 deg about Z (front -> +X).
     'c12': dict(
         rotate=(0, 0, -math.pi / 2), origin_mm=(0, 0, 0),
-        # 1, 8 tam treo + 2-7 giam chan: den; 9 dong co yaw, 10 tay L, 11 khung + nap pitch, 12 khoi camera: xam than
+        # 1, 8 mount plates + 2-7 dampers: black; 9 yaw motor, 10 L arm, 11 frame + pitch caps, 12 camera block: charcoal
         material={9: 'c12_body', 10: 'c12_body', 11: 'c12_body', 12: 'c12_body'},
         default_material='black',
-        extras='c12_trim',                                # vien cam + mat kinh (khong co trong STEP)
+        extras='c12_trim',                                # orange trim + lens glass (not in the STEP)
         max_tris={12: 12000, 11: 9000, 10: 6000}, default_max_tris=2500,
     ),
-    # STEP: truc dong co theo Y, dau truc (phia canh) o y = 4.8, de o y = 41.3; tam truc x = 12, z = 25.6.
-    # -> xoay -90 do quanh X (truc -> +Z, dau truc len tren); goc = tam mat day de (dat len de dong co).
+    # STEP: motor axis along Y, shaft tip (prop side) at y = 4.8, base at y = 41.3; axis centre x = 12, z = 25.6.
+    # -> rotate -90 deg about X (axis -> +Z, shaft up); origin = centre of the base (sits on the motor mount).
     'x2216': dict(
-        rotate=(-math.pi / 2, 0, 0), origin_mm=(12.0, 25.6, -41.3),     # (sau khi xoay) tam truc, day de
-        # 1 nap chuong, 3 vo co tem, 18 de
+        rotate=(-math.pi / 2, 0, 0), origin_mm=(12.0, 25.6, -41.3),     # axis centre and base (after rotation)
+        # 1 bell cap, 3 labelled shell, 18 base
         material={1: 'motor_blue', 3: 'white', 18: 'motor_blue', 19: 'silver', 20: 'motor_blue',
                   21: 'motor_blue', 28: 'silver', 29: 'silver', 40: 'silver',
                   **{k: 'copper' for k in range(4, 18)}},
-        default_material='silver',                        # vit, bac dan
+        default_material='silver',                        # screws, bearings
         max_tris={1: 3000, 3: 1500, 18: 2000}, default_max_tris=150,
     ),
-    # GPS Holybro (M9N, cung vo voi M10 tren drone): vo tron D51.2 x 14.4, duoi ra day o +Y -> mui ten
-    # chi -Y. -> xoay +90 do quanh Z (mui ten -> +X = mui drone); goc = tam mat day (dat len dau cot GPS).
+    # GPS Holybro (M9N, same housing as the M10 on the drone): round shell D51.2 x 14.4, cable exits at +Y, so the
+    # arrow points -Y -> rotate +90 deg about Z (arrow -> +X = nose); origin = bottom centre (sits on the GPS mast).
     'gps_m9n': dict(
         rotate=(0, 0, math.pi / 2), origin_mm=(0, 0, -7.2),
-        material={1: 'black'},                            # vo
-        default_material='white',                         # 2-3 cua so den, 4 mui ten, 5-16 chu, 17-18 nut
+        material={1: 'black'},                            # housing
+        default_material='white',                         # 2-3 dark windows, 4 arrow, 5-16 text, 17-18 button
         max_tris={1: 6000}, default_max_tris=400,
     ),
 }
@@ -71,7 +72,7 @@ def _mesh(name, verts, faces, mat_name):
 
 
 def _ring(name, outline_out, outline_in, depth_axis, d0, d1, mat_name):
-    """Vanh day (d0 -> d1 theo truc depth_axis) giua 2 duong bao 2D cung so diem (u, v)."""
+    """Thick ring (d0 -> d1 along depth_axis) between two 2D outlines with the same point count (u, v)."""
     def p3(u, v, d):
         return {'x': (d, u, v), 'y': (u, d, v)}[depth_axis]
     n = len(outline_out)
@@ -101,10 +102,10 @@ def _rounded_rect(cu, cv, w, h, r, per_corner=10):
 
 
 def c12_trim():
-    """Chi tiet mau theo anh san pham C12 (do tren anh chieu cua STEP, mm, X = mui, Z = len):
-    vien cam vuong bo goc quanh mat kinh (mat truoc X = 31.3, tam Z = -59.6, ~32 x 38),
-    2 ong kinh (tren Z -49.5, duoi Z -68.1): vanh kim loai + mat kinh; vong cam tren mat ngoai 2 nap
-    pitch (tam X 10.7, Z -59.4, R ~12, mat ngoai Y = +-31.3)."""
+    """Colour details from the C12 product photo (measured on STEP projections, mm, X = nose, Z = up):
+    rounded orange bezel around the lens face (front at X = 31.3, centre Z = -59.6, ~32 x 38),
+    two lenses (upper Z -49.5, lower Z -68.1): metal rim + glass; orange rings on the outer faces of both
+    pitch caps (centre X 10.7, Z -59.4, R ~12, outer face Y = +-31.3)."""
     m = 0.001
     fx = 31.3 * m
     _ring('c12_bezel', _rounded_rect(0, -59.6 * m, 33.5 * m, 39.5 * m, 6 * m),
@@ -152,7 +153,7 @@ def main():
         bpy.context.view_layer.objects.active = o
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
         o.data.transform(__import__('mathutils').Matrix.Translation((-ox, -oy, -oz)))
-        bpy.ops.object.mode_set(mode='EDIT')              # STL tach dinh theo tam giac -> gop lai
+        bpy.ops.object.mode_set(mode='EDIT')              # STL has separate vertices per triangle -> merge them
         bpy.ops.mesh.select_all(action='SELECT')
         bpy.ops.mesh.remove_doubles(threshold=0.00002)
         bpy.ops.object.mode_set(mode='OBJECT')

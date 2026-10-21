@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Drone GCS: van hanh drone trong luc bay (PySide6 + QML).
+"""Drone GCS: in-flight operation of the drone (PySide6 + QML).
 
-Nap firmware / cau hinh / hieu chuan PX4 van dung QGroundControl (tat app nay truoc).
-Danh sach link: config/gcs.yaml.
+Firmware upload, PX4 configuration and calibration still use QGroundControl (close this app first).
+Links are listed in config/gcs.yaml.
 
-    ros2 run ground_station_ui gcs                  # sau khi colcon build
-    python3 ground_station_ui/main.py               # chay thang tu source
+    ros2 run ground_station_ui gcs                  # after colcon build
+    python3 ground_station_ui/main.py               # directly from source
 """
 
 import signal
 import sys
 from pathlib import Path
 
-# Chay tu source tree (co config/ canh package): uu tien package source hon ban trong install/.
-# Ban cai (ros2 run ... gcs) nam o lib/<pkg>/, khong co config/ -> khong doi sys.path.
+# Running from the source tree (config/ next to the package): prefer it over the copy in install/.
+# The installed entry point (ros2 run ... gcs) lives in lib/<pkg>/ without config/, so sys.path is unchanged.
 _SRC = Path(__file__).resolve().parents[1]
 if (_SRC / 'config').is_dir():
     sys.path.insert(0, str(_SRC))
@@ -29,7 +29,7 @@ from ground_station_ui.qt.app import GcsApp
 def main():
     QGuiApplication.setOrganizationName('fablab')
     QGuiApplication.setApplicationName('drone-gcs')
-    # trung ten file .desktop (scripts/install_desktop.sh) -> icon dock / taskbar
+    # matches the .desktop file name (scripts/install_desktop.sh) so the dock / taskbar shows the right icon
     QGuiApplication.setDesktopFileName('drone-gcs')
     app = QGuiApplication(sys.argv)
     app.setApplicationDisplayName('EIU Drone GCS')
@@ -37,7 +37,7 @@ def main():
     for size in (32, 48, 64, 128, 256, 512):
         icon.addFile(str(resource_dir('images') / 'icons' / f'drone-gcs-{size}.png'))
     app.setWindowIcon(icon)
-    # SIGINT: event loop Qt khong tra quyen cho Python -> timer rong de Python xu ly signal
+    # SIGINT: the Qt event loop does not return control to Python, so an empty timer lets Python handle it
     signal.signal(signal.SIGINT, lambda *_: app.quit())
     sigint_timer = QTimer()
     sigint_timer.timeout.connect(lambda: None)
@@ -45,7 +45,7 @@ def main():
 
     try:
         gcs = GcsApp()
-    except ValueError as e:          # gcs.yaml loi
+    except ValueError as e:          # invalid gcs.yaml
         print(e, file=sys.stderr)
         sys.exit(2)
     qml = resource_dir('qml')
@@ -58,7 +58,7 @@ def main():
         sys.exit(1)
 
     ret = app.exec()
-    # Huy engine QML truoc object Python: binding khong doc object da huy
+    # Destroy the QML engine before the Python objects so bindings never read deleted objects
     del engine
     gcs.shutdown()
     sys.exit(ret)

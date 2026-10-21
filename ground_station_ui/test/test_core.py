@@ -1,4 +1,4 @@
-"""Test tang core (Python thuan, khong Qt, khong phan cung)."""
+"""Core layer tests (pure Python, no Qt, no hardware)."""
 
 import socket
 import threading
@@ -16,7 +16,7 @@ OTHER = d.MAVLink(None, srcSystem=7, srcComponent=1)
 
 
 def roundtrip(mav, msg):
-    """Encode -> bytes -> decode: message giong het khi nhan tu link that."""
+    """Encode -> bytes -> decode: the message is identical to one received from a real link."""
     return d.MAVLink(None).parse_buffer(msg.pack(mav))[0]
 
 
@@ -67,7 +67,7 @@ def test_data_from_other_system_is_ignored():
 def test_battery_unknown_percent_and_current():
     router, v = make_vehicle()
     router.dispatch('px4', [px4_heartbeat()])
-    # PX4 that gui battery_remaining = -100 khi khong uoc luong duoc
+    # real PX4 sends battery_remaining = -100 when it cannot estimate
     msg = PX4.sys_status_encode(0, 0, 0, 0, 15940, 0, -100, 0, 0, 0, 0, 0, 0)
     router.dispatch('px4', [roundtrip(PX4, msg)])
     b = v.groups['battery'].values
@@ -100,29 +100,29 @@ def test_attitude_in_degrees_and_heading_wraps():
     router.dispatch('px4', [roundtrip(PX4, att)])
     a = v.groups['attitude'].values
     assert a['valid'] and a['roll'] == -12.5 and a['pitch'] == 4.2
-    assert a['heading'] == 335.0                      # yaw -25 deg -> 335 (nhu la ban QGC)
+    assert a['heading'] == 335.0                      # yaw -25 deg -> 335 (as on the QGC compass)
     router.dispatch('px4', [roundtrip(OTHER, OTHER.attitude_encode(0, 1, 1, 1, 0, 0, 0))])
-    assert v.groups['attitude'].values['roll'] == -12.5   # drone khac: bo qua
+    assert v.groups['attitude'].values['roll'] == -12.5   # another drone: ignored
 
 
 def test_altitude_source_follows_environment():
     router, v = make_vehicle()
     fl = v.groups['flight']
     router.dispatch('px4', [px4_heartbeat()])
-    # trong nha: Home chot luc bat nguon lech -> relative_alt 2.3 m, EKF local 0.2 m (dung)
+    # indoors: Home latched at power-up drifts -> relative_alt 2.3 m, EKF local 0.2 m (correct)
     glob = PX4.global_position_int_encode(0, 0, 0, 48000, 2300, 0, 0, 0, 0)
     loc = PX4.local_position_ned_encode(0, 0, 0, -0.2, 0, 0, 0)
     no_fix = PX4.gps_raw_int_encode(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     router.dispatch('px4', [roundtrip(PX4, m) for m in (glob, loc, no_fix)])
-    assert (fl.values['altRel'], fl.values['altSource']) == (0.2, 'local')     # auto, khong fix
+    assert (fl.values['altRel'], fl.values['altSource']) == (0.2, 'local')     # auto, no fix
     fix3 = PX4.gps_raw_int_encode(0, 3, 0, 0, 0, 0, 0, 0, 0, 9)
     router.dispatch('px4', [roundtrip(PX4, fix3)])
-    assert (fl.values['altRel'], fl.values['altSource']) == (2.3, 'home')      # auto, co fix
+    assert (fl.values['altRel'], fl.values['altSource']) == (2.3, 'home')      # auto, with fix
     fl.set_mode('indoor')
     assert fl.values['altRel'] == 0.2
     fl.set_mode('outdoor')
     router.dispatch('px4', [roundtrip(PX4, no_fix)])
-    assert fl.values['altRel'] == 2.3                                         # ep ngoai troi
+    assert fl.values['altRel'] == 2.3                                         # forced outdoor
 
 
 def test_px4_param_profile_and_bytewise_int():
@@ -149,14 +149,14 @@ def test_px4_param_profile_and_bytewise_int():
     w = Px4ParamWatcher(v, Links(link))
     w.attach(router)
     w.tick(100.0)
-    assert link.sent == []                                  # chua thay PX4 -> chua hoi
+    assert link.sent == []                                  # PX4 not seen yet -> no request
     router.dispatch('px4', [px4_heartbeat()])
     w.tick(100.0)
     assert sorted(m.param_id for m in link.sent) == ['EKF2_GPS_CTRL', 'EKF2_HGT_REF']
     w.tick(101.0)
-    assert len(link.sent) == 2                              # chua het RETRY_S
+    assert len(link.sent) == 2                              # RETRY_S not elapsed
 
-    def pv(name, value):                                    # PX4 gui INT32 kieu bytewise
+    def pv(name, value):                                    # PX4 sends INT32 bytewise
         f = struct.unpack('<f', struct.pack('<i', value))[0]
         return roundtrip(PX4, PX4.param_value_encode(name.encode(), f, d.MAV_PARAM_TYPE_INT32, 1000, 0))
 
@@ -170,7 +170,7 @@ def test_px4_param_profile_and_bytewise_int():
 def test_gps_unknown_sentinels_hidden():
     router, v = make_vehicle()
     router.dispatch('px4', [px4_heartbeat()])
-    # khong fix: PX4 gui eph 9999, h_acc UINT32_MAX -> khong hien so rac
+    # no fix: PX4 sends eph 9999, h_acc UINT32_MAX -> no garbage numbers shown
     nofix = PX4.gps_raw_int_encode(0, 0, 0, 0, 0, 9999, 9999, 0, 0, 0, 0, 0xFFFFFFFF, 3778957570, 0, 0, 0)
     router.dispatch('px4', [roundtrip(PX4, nofix)])
     g = v.groups['gps'].values
@@ -206,12 +206,12 @@ def test_dirty_only_on_change():
     router.dispatch('px4', [px4_heartbeat()])
     g = v.groups['status']
     g.dirty = False
-    router.dispatch('px4', [px4_heartbeat()])     # cung trang thai
+    router.dispatch('px4', [px4_heartbeat()])     # same state
     assert not g.dirty
 
 
 def test_udp_link_learns_peer_and_replies():
-    """Gia lap PX4 SITL: gui heartbeat toi GCS, GCS tra heartbeat ve dung dia chi."""
+    """Simulated PX4 SITL: sends heartbeats to the GCS, which replies to the right address."""
     got = []
     done = threading.Event()
 
@@ -234,7 +234,7 @@ def test_udp_link_learns_peer_and_replies():
             sitl.sendto(px4_heartbeat().pack(PX4), ('127.0.0.1', port))
             done.wait(0.2)
         assert got and got[0].get_type() == 'HEARTBEAT'
-        data, _ = sitl.recvfrom(1024)              # heartbeat GCS gui lai (1 Hz)
+        data, _ = sitl.recvfrom(1024)              # GCS heartbeat sent back (1 Hz)
         reply = d.MAVLink(None).parse_buffer(data)[0]
         assert reply.get_type() == 'HEARTBEAT' and reply.type == d.MAV_TYPE_GCS
         sitl.close()
@@ -244,19 +244,19 @@ def test_udp_link_learns_peer_and_replies():
 
 def test_resolve_environment_follows_px4_config():
     from ground_station_ui.core.vehicle.params import resolve_environment
-    # chon tay -> giu nguyen, khong quan tam PX4 / GPS
+    # manual choice -> kept regardless of PX4 / GPS
     assert resolve_environment('indoor', 'outdoor', 3) == ('indoor', 'manual')
     assert resolve_environment('outdoor', 'indoor', 0) == ('outdoor', 'manual')
-    # auto -> theo bo tham so PX4, ke ca khi GPS noi nguoc lai
+    # auto -> follows the PX4 parameter set, even if GPS says otherwise
     assert resolve_environment('auto', 'outdoor', 0) == ('outdoor', 'px4')
     assert resolve_environment('auto', 'indoor', 3) == ('indoor', 'px4')
-    # chua doc duoc tham so -> tam theo GPS fix
+    # parameters unknown -> follows the GPS fix
     assert resolve_environment('auto', 'unknown', 3) == ('outdoor', 'gps')
     assert resolve_environment('auto', 'unknown', None) == ('indoor', 'gps')
 
 
 def test_udp_port_in_use_is_reported_and_status_is_open():
-    """Cong UDP da bi chuong trinh khac (vd QGC) chiem -> bao loi ro; mo duoc -> trang thai 'Open' (khong ket 'Opening')."""
+    """UDP port already taken (e.g. by QGC) -> clear error; otherwise state 'Open' (not stuck in 'Opening')."""
     busy = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     busy.bind(('127.0.0.1', 0))
     port = busy.getsockname()[1]
@@ -274,7 +274,7 @@ def test_udp_port_in_use_is_reported_and_status_is_open():
 
 
 def test_udp_remote_receives_heartbeat_before_any_packet():
-    """Link SITL co `remote`: chua nghe thay ai van gui heartbeat GCS toi PX4 (de PX4 gui du lieu ve)."""
+    """SITL link with `remote`: sends GCS heartbeats to PX4 before any peer is heard (so PX4 streams back)."""
     px4 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     px4.bind(('127.0.0.1', 0))
     px4.settimeout(3.0)
@@ -295,28 +295,28 @@ def test_track_records_only_when_armed_one_segment_per_flight_and_saves_gpx(tmp_
     v = Vehicle(router, {'autopilot_links': ['px4'], 'track_dir': str(tmp_path)})
     tr = v.groups['track']
     pos = lambda lat, lon: roundtrip(PX4, PX4.global_position_int_encode(0, int(lat * 1e7), int(lon * 1e7), 12000, 5000, 0, 0, 0, 0))
-    lat0, lon0, d = 11.0529, 106.6661, 0.00002                 # ~2.2 m moi buoc
+    lat0, lon0, d = 11.0529, 106.6661, 0.00002                 # ~2.2 m per step
     router.dispatch('px4', [px4_heartbeat(armed=False), pos(lat0, lon0), pos(lat0 + d, lon0)])
-    assert tr.path.count == 0 and not tr.values['recording']   # o dat: khong ghi
+    assert tr.path.count == 0 and not tr.values['recording']   # on the ground: not recorded
     router.dispatch('px4', [px4_heartbeat(armed=True)] + [pos(lat0 + i * d, lon0) for i in range(5)])
-    router.dispatch('px4', [pos(lat0 + 4 * d + 0.000001, lon0)])   # < 0.5 m: bo qua
+    router.dispatch('px4', [pos(lat0 + 4 * d + 0.000001, lon0)])   # < 0.5 m: skipped
     assert tr.values['recording'] and tr.values['points'] == 5 and len(tr.path.segments) == 1
     assert 8.0 < tr.values['lengthM'] < 9.5
     router.dispatch('px4', [px4_heartbeat(armed=False), pos(lat0, lon0)])
     files = list(tmp_path.glob('track_*.gpx'))
     assert len(files) == 1 and files[0].read_text().count('<trkpt') == 5 and tr.values['lastFile'] == str(files[0])
     router.dispatch('px4', [px4_heartbeat(armed=True), pos(lat0, lon0 + d), pos(lat0, lon0 + 3 * d)])
-    assert len(tr.path.segments) == 2 and len(tr.path.segments[1]) == 2      # chuyen bay 2 = doan moi
+    assert len(tr.path.segments) == 2 and len(tr.path.segments[1]) == 2      # second flight = new segment
     tr.clear()
     assert tr.path.count == 0 and tr.values['points'] == 0
 
 
 def test_pathlog_incremental_updates():
-    """UI chi nhan diem moi; reset khi xoa / cat bot / thua."""
+    """The UI receives only new points; reset on clear / trim / thin."""
     from ground_station_ui.core.facts import PathLog
     p = PathLog()
     p.add((1, 1))
-    assert p.take() == ('reset', [[(1, 1)]])                   # lan dau: ve tu dau
+    assert p.take() == ('reset', [[(1, 1)]])                   # first read: draw from the start
     p.add((2, 2)); p.start_segment(); p.add((3, 3))
     assert p.take() == ('append', [(0, (2, 2)), (1, (3, 3))]) and p.take() is None
     p.trim_front(2)
@@ -328,7 +328,7 @@ def test_pathlog_incremental_updates():
 
 
 def test_map_position_falls_back_to_jetson_when_no_px4_link(monkeypatch):
-    """Ban do: PX4 truc tiep (915 / SITL) uu tien; khong co / mat PX4 > 2 s -> GLOBAL_POSITION_INT tu Jetson."""
+    """Map: direct PX4 (915 / SITL) preferred; without PX4, or PX4 silent > 2 s -> GLOBAL_POSITION_INT from the Jetson."""
     import ground_station_ui.core.vehicle.vehicle as vehmod
     now = [100.0]
     monkeypatch.setattr(vehmod.time, 'monotonic', lambda: now[0])
@@ -336,18 +336,18 @@ def test_map_position_falls_back_to_jetson_when_no_px4_link(monkeypatch):
     v = Vehicle(router, {'autopilot_links': ['px4'], 'companion_link': 'jetson'})
     gps, fl = v.groups['gps'], v.groups['flight']
     gp = lambda mav, lat, hdg=9000: roundtrip(mav, mav.global_position_int_encode(0, int(lat * 1e7), int(106.6661 * 1e7), 20000, 7000, 0, 0, 0, hdg))
-    router.dispatch('jetson', [gp(JETSON, 11.0001)])             # chi co Jetson
+    router.dispatch('jetson', [gp(JETSON, 11.0001)])             # Jetson only
     assert gps.values['lat'] == 11.0001 and fl.values['altHome'] == 7.0 and fl.values['heading'] == 90.0
-    router.dispatch('px4', [px4_heartbeat(), gp(PX4, 11.0002)])  # co PX4 truc tiep -> uu tien
+    router.dispatch('px4', [px4_heartbeat(), gp(PX4, 11.0002)])  # direct PX4 available -> preferred
     router.dispatch('jetson', [gp(JETSON, 11.0009)])
     assert gps.values['lat'] == 11.0002
-    now[0] = 103.0                                                # PX4 im > 2 s -> Jetson
+    now[0] = 103.0                                                # PX4 silent > 2 s -> Jetson
     router.dispatch('jetson', [gp(JETSON, 11.0003)])
     assert gps.values['lat'] == 11.0003
 
 
 def test_attitude_heading_px4_then_jetson_and_stale(monkeypatch):
-    """Huong (la ban, icon ban do): PX4 ATTITUDE uu tien; mat PX4 -> quaternion Jetson; khong nguon -> invalid."""
+    """Heading (compass, map icon): PX4 ATTITUDE preferred; PX4 lost -> Jetson quaternion; no source -> invalid."""
     import math as m_
     import ground_station_ui.core.vehicle.groups as groups
     now = [100.0]
@@ -357,12 +357,27 @@ def test_attitude_heading_px4_then_jetson_and_stale(monkeypatch):
     att = v.groups['attitude']
     router.dispatch('px4', [px4_heartbeat(), roundtrip(PX4, PX4.attitude_encode(0, 0.1, -0.05, m_.radians(90), 0, 0, 0))])
     assert att.values['source'] == 'px4' and att.values['heading'] == 90.0 and att.values['roll'] == 5.7
-    h = m_.radians(225) / 2                                       # Jetson: yaw 225 do (Tay Nam)
+    h = m_.radians(225) / 2                                       # Jetson: yaw 225 deg (south-west)
     pose = roundtrip(JETSON, JETSON.drone_local_pose_encode(0, 0, 0, -1, [m_.cos(h), 0, 0, m_.sin(h)], 0, 0, 0, 0))
     router.dispatch('jetson', [pose])
-    assert att.values['heading'] == 90.0                          # PX4 con song -> bo qua Jetson
+    assert att.values['heading'] == 90.0                          # PX4 still alive -> Jetson ignored
     now[0] = 103.0
     router.dispatch('jetson', [pose])
     assert att.values['source'] == 'jetson' and att.values['heading'] == 225.0 and att.values['valid']
     att.tick(106.0)
-    assert not att.values['valid']                                # khong nguon nao -> invalid
+    assert not att.values['valid']                                # no source -> invalid
+
+
+def test_track_records_from_the_jetson_without_px4_link(tmp_path):
+    """Jetson only (no 915): the flown path is still recorded, flying = more than 0.5 m above Home."""
+    router = MessageRouter()
+    v = Vehicle(router, {'autopilot_links': ['px4'], 'companion_link': 'jetson', 'track_dir': str(tmp_path)})
+    tr = v.groups['track']
+    gp = lambda lat, rel_mm: roundtrip(JETSON, JETSON.global_position_int_encode(
+        0, int(lat * 1e7), int(106.6661 * 1e7), 20000, rel_mm, 0, 0, 0, 0))
+    router.dispatch('jetson', [gp(11.0529, 100), gp(11.05292, 100)])          # on the ground
+    assert not tr.values['recording'] and tr.path.count == 0
+    router.dispatch('jetson', [gp(11.0529 + i * 0.00002, 5000) for i in range(4)])
+    assert tr.values['recording'] and tr.values['points'] == 4
+    router.dispatch('jetson', [gp(11.0529, 50)])                               # landed -> GPX saved
+    assert not tr.values['recording'] and len(list(tmp_path.glob('track_*.gpx'))) == 1

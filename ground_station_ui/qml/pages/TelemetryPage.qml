@@ -3,8 +3,8 @@ import QtQuick.Layouts
 import QtQuick.Controls.Basic
 import "../components"
 
-// Telemetry: gia tri hien tai (vi tri, tu the, van toc, gimbal, dinh vi, trang thai bay) + do thi.
-// Suc khoe thiet bi: tab Diagnostics.
+// Telemetry: current values (position, attitude, velocity, gimbal, localization, flight state) + plots.
+// Component health: Diagnostics tab.
 ScrollView {
     id: page
     clip: true
@@ -23,7 +23,7 @@ ScrollView {
     function f(x, d, u) { return has(x) ? Number(x).toFixed(d) + (u ? " " + u : "") : "" }
     function age(type) { return m[type] ? m[type].age : -1 }
     function rate(type) { return m[type] ? m[type].rate : -1 }
-    function newest() {                       // tuoi nho nhat trong cac message
+    function newest() {                       // smallest age among the messages
         var best = -1
         for (var i = 0; i < arguments.length; i++) {
             var a = age(arguments[i])
@@ -46,7 +46,7 @@ ScrollView {
             Text { text: "  live vehicle values  ·  device health: Diagnostics"; color: Theme.textDim; font.pixelSize: 12 }
         }
 
-        // luoi: so cot theo do rong; the cung hang cao bang nhau (Layout.fillHeight)
+        // grid: column count from the width; cards in a row have equal height (Layout.fillHeight)
         GridLayout {
             id: cards
             Layout.fillWidth: true
@@ -165,7 +165,7 @@ ScrollView {
         // ---------------- Real-time plot ----------------
         Rectangle {
             Layout.fillWidth: true
-            // chiem phan con lai cua man hinh (toi thieu 300 px)
+            // takes the rest of the screen (minimum 300 px)
             Layout.preferredHeight: Math.max(300, page.availableHeight - cards.height - 90)
             radius: Theme.radius; color: Theme.panel; border.color: Theme.border
 
@@ -192,7 +192,7 @@ ScrollView {
                     readonly property real windowS: parseInt(rng.currentText)
                     Connections {
                         target: telemetry
-                        enabled: page.visible              // trang an -> khong ve lai
+                        enabled: page.visible              // page hidden -> no repaint
                         function onChanged() {
                             if (plot.paused) return
                             plot.pts = telemetry.series(sig.currentText, plot.windowS)
@@ -217,7 +217,7 @@ ScrollView {
                         var pad = (hi - lo) * 0.1; hi += pad; lo -= pad
                         var X = function (t) { return padL + (t + windowS) / windowS * (w - padL - 8) }
                         var Y = function (v) { return 6 + (hi - v) / (hi - lo) * (h - padB - 12) }
-                        // luoi + nhan
+                        // grid + labels
                         ctx.strokeStyle = "#2a3240"; ctx.lineWidth = 1; ctx.fillStyle = "#8b949e"; ctx.font = "11px monospace"
                         for (var k = 0; k <= 4; k++) {
                             var v = lo + (hi - lo) * k / 4, y = Y(v)
@@ -228,11 +228,11 @@ ScrollView {
                             var t = -windowS + windowS * s / 4
                             ctx.fillText((t === 0 ? "now" : t.toFixed(0) + " s"), X(t) - 14, h - 4)
                         }
-                        // duong du lieu
+                        // data line
                         ctx.strokeStyle = "#5b9cf0"; ctx.lineWidth = 2; ctx.beginPath()
                         for (var j = 0; j < pts.length; j++) {
                             var px = X(pts[j][0]), py = Y(pts[j][1])
-                            // khoang trong > 1 s -> ngat net
+                            // gap > 1 s -> line broken
                             if (j === 0 || pts[j][0] - pts[j - 1][0] > 1.0) ctx.moveTo(px, py); else ctx.lineTo(px, py)
                         }
                         ctx.stroke()

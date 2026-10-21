@@ -27,7 +27,7 @@ def test_geojson_polygon_circle_and_openaip_types():
     a, b = zones[0], zones[1]
     assert a.contains(11.05, 106.05) and not a.contains(11.15, 106.05)
     assert a.upper == '500 m'
-    # vung tron ban kinh 1 km: 900 m trong, 1100 m ngoai
+    # 1 km radius circle: 900 m inside, 1100 m outside
     _, d_in = bearing_distance(11.5, 106.5, 11.5 + 900 / 111195, 106.5)
     assert d_in < 1000 and b.contains(11.5 + 900 / 111195, 106.5)
     assert not b.contains(11.5 + 1100 / 111195, 106.5)
@@ -64,8 +64,8 @@ DB 12:03:00 N 107:00:00 E, 12:00:00 N 107:03:04 E
     assert sq.lower == 'SFC' and sq.upper == '2000FT'
     assert sq.contains(11.05, 106.05) and not sq.contains(11.2, 106.05)
     assert circ.contains(11.5, 106.5) and not circ.contains(11.5 + 2.2 * 1852 / 111195, 106.5)
-    assert sector.contains(12.02, 107.02)       # goc phan tu Dong-Bac
-    assert not sector.contains(11.98, 107.02)   # phia Nam tam: ngoai cung
+    assert sector.contains(12.02, 107.02)       # north-east quadrant
+    assert not sector.contains(11.98, 107.02)   # south of the centre: outside the arc
 
 
 def test_parse_coord_formats():
@@ -80,8 +80,8 @@ def test_circle_radius():
 
 def test_load_dirs_skips_bad_files(tmp_path):
     (tmp_path / 'a.geojson').write_text(json.dumps(SQUARE))
-    (tmp_path / 'bad.geojson').write_text('{khong phai json')
-    (tmp_path / 'note.md').write_text('bo qua')
-    zones = load_dirs([tmp_path, tmp_path / 'khong-co'])
+    (tmp_path / 'bad.geojson').write_text('{not json')
+    (tmp_path / 'note.md').write_text('ignored')
+    zones = load_dirs([tmp_path, tmp_path / 'missing'])
     assert len(zones) == 3
     assert [z.name for z in zones_at(zones, 11.05, 106.05)] == ['Khu A']

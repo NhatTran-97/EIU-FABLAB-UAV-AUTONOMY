@@ -8,7 +8,7 @@ ScrollView {
     clip: true
     contentWidth: availableWidth
 
-    // So cot theo do rong: moi the toi thieu panelMin; khong nhieu cot hon so link.
+    // Column count from the width: each card at least panelMin wide; never more columns than links.
     readonly property int panelMin: 520
 
 ColumnLayout {
@@ -21,15 +21,15 @@ ColumnLayout {
                                       Math.floor((page.availableWidth + Theme.gap) / (page.panelMin + Theme.gap))))
         columnSpacing: Theme.gap; rowSpacing: Theme.gap
 
-        // link tu config/gcs.yaml. model = so luong: list tao moi moi tick -> dung list lam model se tao lai
-        // delegate (ComboBox mat lua chon).
+        // links from config/gcs.yaml. model = count: the list is rebuilt every tick, and using it as the model would
+        // recreate the delegates (the ComboBox would lose its selection).
         Repeater {
             model: links.items.length
             delegate: LinkPanel {
                 required property int index
                 Layout.fillWidth: true
-                Layout.fillHeight: true            // the cung hang cao bang nhau
-                Layout.preferredWidth: 1           // chia deu cot
+                Layout.fillHeight: true            // cards in a row have equal height
+                Layout.preferredWidth: 1           // equal column widths
                 Layout.minimumWidth: 0
                 info: links.items[index] || ({})
             }

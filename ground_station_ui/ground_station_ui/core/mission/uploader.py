@@ -1,13 +1,13 @@
-"""Gui danh sach waypoint bang giao thuc mission MAVLink (Python thuan).
+"""Upload a waypoint list with the MAVLink mission protocol (pure Python).
 
-    GCS ── MISSION_COUNT(n) ─────────────► dich (Jetson; sau nay co the la PX4)
-        ◄─ MISSION_REQUEST_INT(seq) ─────┘   (dich xin tung diem, tu toc do cua no)
+    GCS ── MISSION_COUNT(n) ─────────────► target (Jetson; possibly PX4 later)
+        ◄─ MISSION_REQUEST_INT(seq) ─────┘   (the target requests each item at its own pace)
         ── MISSION_ITEM_INT(seq) ────────►
         ...
-        ◄─ MISSION_ACK(ACCEPTED) ─────────  xong
+        ◄─ MISSION_ACK(ACCEPTED) ─────────  done
 
-Khong co phan hoi sau `timeout_s` -> gui lai message cuoi (COUNT hoac ITEM), het `retries` -> timeout.
-Danh sach duoc chup lai luc bam gui: sua waypoint trong luc dang gui khong lam lech du lieu.
+No reply within `timeout_s` -> resend the last message (COUNT or ITEM); after `retries` -> timeout.
+The list is snapshotted when sending starts, so editing waypoints during the upload cannot corrupt it.
 """
 
 import time
@@ -24,15 +24,29 @@ MISSION_RESULT = {
 }
 
 
+CMD_PICK = mavlink.MAV_CMD_USER_3      # project convention: pick task at a waypoint (see offboard_control docs)
+PICK_MODE = {'pick_auto': 0, 'pick_manual': 1}
+
+
+def item_command(wp):
+    """(command, param1..4) of one waypoint: NAV_WAYPOINT, or PICK with mode / search / hook heights."""
+    nan = float('nan')
+    task = wp.get('task', 'none')
+    if task in PICK_MODE:
+        return CMD_PICK, (PICK_MODE[task], float(wp.get('searchAlt', 3.0)), float(wp.get('hookAlt', 1.0)), nan)
+    return mavlink.MAV_CMD_NAV_WAYPOINT, (0, 0, 0, nan)       # hold, accept radius, pass radius, yaw
+
+
 def to_items(waypoints, target_system, target_component):
-    """[{lat, lon, alt}] -> [MISSION_ITEM_INT]; do cao tuong doi diem Home."""
+    """[{lat, lon, alt, task...}] -> [MISSION_ITEM_INT]; altitude relative to Home."""
     out = []
     for i, wp in enumerate(waypoints):
+        command, params = item_command(wp)
         out.append(mavlink.MAVLink_mission_item_int_message(
             target_system, target_component, i,
-            mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, mavlink.MAV_CMD_NAV_WAYPOINT,
+            mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, command,
             1 if i == 0 else 0, 1,                       # current, autocontinue
-            0, 0, 0, float('nan'),                       # hold, accept radius, pass radius, yaw
+            *params,
             int(round(wp['lat'] * 1e7)), int(round(wp['lon'] * 1e7)), float(wp['alt']),
             mavlink.MAV_MISSION_TYPE_MISSION))
     return out
@@ -44,19 +58,21 @@ class MissionUploader(FactGroup):
     def __init__(self, links, timeout_s=1.5, retries=5):
         super().__init__(busy=False, state='idle', sent=0, total=0, message='')
         self.links = links
+        self.uploaded = []              # waypoints of the last successful upload (planned path in the 3D view)
+        self.revision = 0               # incremented on every successful upload
         self.timeout_s = float(timeout_s)
         self.retries = int(retries)
         self._job = None
 
     def attach(self, router):
         router.subscribe('MISSION_REQUEST_INT', self.on_request)
-        router.subscribe('MISSION_REQUEST', self.on_request)    # dich cu (khong INT) -- van tra ITEM_INT
+        router.subscribe('MISSION_REQUEST', self.on_request)    # older targets (non-INT) still get ITEM_INT
         router.subscribe('MISSION_ACK', self.on_ack)
 
     def upload(self, target, waypoints):
         items = to_items(waypoints, target.system, target.component)
         self._job = {'target': target, 'items': items, 'last': None, 'sent_at': 0.0, 'tries': 0,
-                     'requested': set()}
+                     'requested': set(), 'waypoints': [dict(w) for w in waypoints]}
         self.set(busy=True, state='sending', sent=0, total=len(items), message='')
         count = mavlink.MAVLink_mission_count_message(target.system, target.component, len(items),
                                                       mavlink.MAV_MISSION_TYPE_MISSION)
@@ -66,7 +82,7 @@ class MissionUploader(FactGroup):
         if self._job:
             self._finish('idle', 'Cancelled')
 
-    # --- noi bo -----------------------------------------------------------------------------
+    # --- internals -----------------------------------------------------------------------
     def _transmit(self, msg, retry=False):
         job = self._job
         link = self.links.get(job['target'].link)
@@ -105,6 +121,8 @@ class MissionUploader(FactGroup):
             return
         result = MISSION_RESULT.get(m.type, f'Error {m.type}')
         if result == 'done':
+            self.uploaded = self._job['waypoints']
+            self.revision += 1
             self._finish('done', f'Uploaded {len(self._job["items"])} waypoints')
         else:
             self._finish('error', result)

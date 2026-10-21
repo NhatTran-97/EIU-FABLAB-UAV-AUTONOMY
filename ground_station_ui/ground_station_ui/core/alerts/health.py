@@ -1,8 +1,8 @@
-"""Tong hop van de cua he thong (problem-first): dung chung cho Alert Center tren thanh tren cung,
-System Health o tab Diagnostics va Pre-flight check truoc khi Take-off.
+"""System problem summary (problem-first), shared by the top-bar Alert Center, System Health on the
+Diagnostics tab and the pre-flight check before Take-off.
 
-evaluate(...) -> [{'level': 'critical'|'warning', 'source', 'text'}], critical truoc.
-Critical = khong nen cat canh; warning = can de y.
+evaluate(...) -> [{'level': 'critical'|'warning', 'source', 'text'}], critical first.
+Critical = do not take off; warning = needs attention.
 """
 
 BATTERY_WARN = 25

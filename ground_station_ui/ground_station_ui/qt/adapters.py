@@ -1,7 +1,7 @@
-"""Adapter: dua FactGroup (Python thuan) len QML.
+"""Adapters exposing FactGroups (pure Python) to QML.
 
-QML doc `<adapter>.values.<key>` va `<adapter>.items`. `changed` chi phat trong flush() khi group `dirty`
--> tan so danh gia lai binding <= tan so UiTicker.
+QML reads `<adapter>.values.<key>` and `<adapter>.items`. `changed` is emitted only from flush() when the
+group is `dirty`, so bindings are re-evaluated at most at the UiTicker rate.
 """
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
@@ -30,10 +30,10 @@ class GroupAdapter(QObject):
 
 
 class PathAdapter(QObject):
-    """PathLog -> QML / geometry, tang dan. flush() phat:
-      reset()                         : consumer doc lai toan bo qua paths()
-      appended([[seg, a, b(, c)], ...]): chi diem moi
-    Khong truyen ca duong qua QVariantList (chi phi O(n) moi lan cap nhat)."""
+    """PathLog -> QML / geometry, incrementally. flush() emits:
+      reset()                         : the consumer reloads everything via paths()
+      appended([[seg, a, b(, c)], ...]): new points only
+    The full path is never passed through QVariantList (O(n) cost per update)."""
     reset = Signal()
     appended = Signal('QVariantList')
 
@@ -57,14 +57,15 @@ class PathAdapter(QObject):
 
 
 class VehicleAdapter(QObject):
-    """vehicle.status / .gps / .home / .battery / .sensors / .flight / .attitude / .messages / .companion"""
+    """vehicle.status / .gps / .home / .battery / .sensors / .flight / .attitude / .messages / .companion /
+    .localPose / .gimbal / .track / .missionProgress"""
 
     def __init__(self, vehicle, parent=None):
         super().__init__(parent)
         self.vehicle = vehicle
         self.adapters = {name: GroupAdapter(g, self) for name, g in vehicle.groups.items()}
-        self._trail3d = PathAdapter(vehicle.groups['localPose'].trail, self)   # ENU, trang 3D
-        self._track = PathAdapter(vehicle.groups['track'].path, self)         # lat/lon, ban do
+        self._trail3d = PathAdapter(vehicle.groups['localPose'].trail, self)   # ENU, 3D page
+        self._track = PathAdapter(vehicle.groups['track'].path, self)         # lat/lon, map
 
     @Slot()
     def clearTrail(self):
@@ -73,7 +74,7 @@ class VehicleAdapter(QObject):
 
     @Slot()
     def clearTrack(self):
-        """Xoa vet hien thi tren ban do (GPX khong doi)."""
+        """Clear the track shown on the map (saved GPX files are kept)."""
         self.vehicle.groups['track'].clear()
         self.adapters['track'].flush()
 
@@ -83,7 +84,7 @@ class VehicleAdapter(QObject):
         self._trail3d.flush()
         self._track.flush()
 
-    def _a(name):   # noqa: N805 -- getter cho Property
+    def _a(name):   # noqa: N805 -- builds the Property getter
         return lambda self: self.adapters[name]
 
     status = Property(QObject, _a('status'), constant=True)
@@ -98,6 +99,7 @@ class VehicleAdapter(QObject):
     localPose = Property(QObject, _a('localPose'), constant=True)
     gimbal = Property(QObject, _a('gimbal'), constant=True)
     track = Property(QObject, _a('track'), constant=True)
+    missionProgress = Property(QObject, _a('missionProgress'), constant=True)
     trail3d = Property(QObject, lambda self: self._trail3d, constant=True)
     trackPath = Property(QObject, lambda self: self._track, constant=True)
     del _a

@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 
-// Cum dong ho goc tren phai ban do: tu the, la ban, do cao, toc do.
+// Instrument cluster, top right of the map: attitude, compass, altitude, speed.
 Rectangle {
     id: panel
     readonly property var att: vehicle.attitude.values
@@ -38,7 +38,7 @@ Rectangle {
             }
         }
 
-        // do cao (chu lon), toc do
+        // altitude (large), speed
         GridLayout {
             Layout.fillWidth: true
             columns: 3
@@ -59,7 +59,7 @@ Rectangle {
             }
             Value {
                 objectName: "altValue"
-                // nguon: cam bien khoang cach (trong nha) / so voi Home (ngoai troi)
+                // source: rangefinder (indoors) / above Home (outdoors)
                 label: panel.fl.altSource === "local" ? "Altitude · sensor" : "Altitude · Home"
                 value: panel.num(panel.fl.altRel, "m", 1); big: true
             }

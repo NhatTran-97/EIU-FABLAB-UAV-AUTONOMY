@@ -2,8 +2,8 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 
-// Popup tu o PX4 (TopBar): Take-off / Land thang PX4 qua radio 915 (khong qua Jetson).
-// Khoa theo commands.gates.px4 (link 915, khoa cheo, trang thai bay). Xac nhan: giu nut 1 s.
+// Popup from the PX4 box (TopBar): Take-off / Land directly to PX4 over radio 915 (not via the Jetson).
+// Locked by commands.gates.px4 (915 link, cross-route lock, flight state). Confirm by holding the button 1 s.
 Popup {
     id: pop
     width: 400
@@ -54,7 +54,7 @@ Popup {
             spacing: 8
             Text { text: "Take-off"; color: Theme.text; font.pixelSize: 13; font.bold: true; Layout.fillWidth: true }
             Text { text: "Altitude"; color: Theme.textDim; font.pixelSize: 12 }
-            // don vi noi bo = dm (SpinBox chi nhan so nguyen) -> buoc 0.5 m
+            // stored in dm (SpinBox only takes integers) -> 0.5 m steps
             SpinBox {
                 id: altBox
                 readonly property real meters: value / 10
@@ -95,7 +95,7 @@ Popup {
             onConfirmed: commands.directLand()
         }
 
-        // ---- trang thai lenh thang PX4 ----
+        // ---- direct PX4 command status ----
         Text {
             visible: text !== ""
             Layout.fillWidth: true; wrapMode: Text.WordWrap

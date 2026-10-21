@@ -1,8 +1,8 @@
-"""Tai truoc 1 vung ban do vao cache (giong 'Offline Maps' cua QGC).
+"""Prefetch a map area into the cache (like QGC 'Offline Maps').
 
-Chay tren thread rieng, vai worker song song; o da co trong cache thi bo qua. Tien do doc qua
-`progress()`; huy bang cancel(). Vong doi: idle -> running -> cancelling -> idle (phase).
-Tat app: cancel_and_wait() TRUOC khi dong SQLite (worker khong con cham vao cache da dong).
+Runs on its own thread with a few parallel workers; tiles already cached are skipped. Progress via
+`progress()`, cancel with cancel(). Lifecycle (phase): idle -> running -> cancelling -> idle.
+On shutdown, call cancel_and_wait() BEFORE closing SQLite so no worker touches a closed cache.
 """
 
 import threading
@@ -33,8 +33,8 @@ class Prefetcher:
                 self._state['phase'] = 'cancelling'
 
     def cancel_and_wait(self, timeout=6.0):
-        """Huy va cho thread tai dung (moi worker xong o dang tai, toi da ~FETCH_TIMEOUT).
-        True neu da dung han."""
+        """Cancel and wait for the download thread (each worker finishes its current tile, ~FETCH_TIMEOUT max).
+        True if it stopped in time."""
         self.cancel()
         t = self._thread
         if t is not None:
@@ -43,8 +43,8 @@ class Prefetcher:
         return True
 
     def start(self, layer_id, bbox, zmin, zmax, max_tiles):
-        """bbox = (west, south, east, north). Tra ve thong bao loi (str) hoac '' neu bat dau."""
-        # Lop ghep (Hybrid) -> tai tung lop nguon
+        """bbox = (west, south, east, north). Returns an error message (str), or '' when started."""
+        # Composite layer (Hybrid): download each source layer
         sources = [s for s in self.server.sources(layer_id) if s.url]
         if not sources:
             return 'This layer has no online source'

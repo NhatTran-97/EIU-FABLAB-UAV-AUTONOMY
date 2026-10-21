@@ -4,7 +4,7 @@ project(ground_station_ui)
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 
-# App PySide6/QML -- khong co code C++.
+# PySide6/QML app -- no C++ code.
 # Cai module python (ca cac goi con core/, qt/): from ground_station_ui.core... import ...
 ament_python_install_package(${PROJECT_NAME})
 
@@ -20,8 +20,8 @@ install(DIRECTORY qml config data images
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
-  # Python thuan, khong can Qt / phan cung.
-  ament_add_pytest_test(test_all test)        # toan bo test/ (core, maps, mission, lenh, cau hinh...)
+  # Pure Python, no Qt / hardware needed.
+  ament_add_pytest_test(test_all test)        # all of test/ (core, maps, mission, commands, config...)
 endif()
 
 ament_package()

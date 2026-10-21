@@ -1,6 +1,6 @@
-"""FactGroup: nhom du lieu (GPS, pin, link...) = dict `values` + list `items` + co `dirty`.
+"""FactGroup: one data group (GPS, battery, link...) = `values` dict + `items` list + `dirty` flag.
 
-Ghi o tan so message (toi ~50 Hz); tang Qt doc khi `dirty`, toi da 5-10 Hz.
+Written at message rate (up to ~50 Hz); the Qt layer reads it only when `dirty`, at most 5-10 Hz.
 """
 
 
@@ -22,19 +22,19 @@ class FactGroup:
             self.dirty = True
 
     def attach(self, router):
-        """Dang ky message voi router (lop con)."""
+        """Subscribe to messages on the router (subclasses)."""
 
     def tick(self, now):
-        """Cap nhat theo thoi gian (stale, tuoi du lieu); goi tu UI ticker."""
+        """Time-based update (staleness, data age); called from the UI ticker."""
 
 
 class PathLog:
-    """Polyline nhieu doan, doc tang dan.
+    """Multi-segment polyline read incrementally.
 
-    Ghi: start_segment(), add(point), clear(), trim_front(n), thin()
-    Doc (1 consumer, moi lan flush UI):
+    Write: start_segment(), add(point), clear(), trim_front(n), thin()
+    Read (single consumer, once per UI flush):
         take() -> None | ('reset', segments) | ('append', [(seg_index, point), ...])
-    clear / trim_front / thin -> 'reset'; add -> 'append'.
+    clear / trim_front / thin produce 'reset'; add produces 'append'.
     """
 
     def __init__(self):
@@ -66,7 +66,7 @@ class PathLog:
         self._mark_reset()
 
     def trim_front(self, n):
-        """Bo n diem dau."""
+        """Drop the first n points."""
         while n > 0 and self.segments:
             seg = self.segments[0]
             k = min(n, len(seg))
@@ -78,7 +78,7 @@ class PathLog:
         self._mark_reset()
 
     def thin(self):
-        """Giam 1/2 so diem, giu diem dau / cuoi moi doan."""
+        """Halve the number of points, keeping the first and last point of each segment."""
         self.segments = [s[:-1:2] + s[-1:] if len(s) > 2 else s for s in self.segments]
         self.count = sum(len(s) for s in self.segments)
         self._mark_reset()

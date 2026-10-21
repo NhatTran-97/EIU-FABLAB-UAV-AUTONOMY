@@ -1,7 +1,7 @@
-"""Doc mot so tham so PX4 (PARAM_REQUEST_READ -> PARAM_VALUE) de app biet PX4 dang nap
-bo tham so trong nha hay ngoai troi (config/px4/indoor.params / outdoor.params).
+"""Read a few PX4 parameters (PARAM_REQUEST_READ -> PARAM_VALUE) to learn whether the indoor or outdoor
+parameter set is loaded (config/px4/indoor.params / outdoor.params).
 
-Hoi lai dinh ky vi nguoi dung co the nap file khac bang QGC roi mo lai app.
+Re-read periodically, since another file may be loaded with QGC while the app is running.
 """
 
 import struct
@@ -11,12 +11,12 @@ from ground_station_ui.core.facts import FactGroup
 from ground_station_ui.core.mavlink import drone_dialect as mavlink
 
 WATCHED = ('EKF2_GPS_CTRL', 'EKF2_HGT_REF')
-RETRY_S = 3.0          # chua co gia tri -> hoi lai sau
-REFRESH_S = 30.0       # da co -> hoi lai de bat thay doi
+RETRY_S = 3.0          # no value yet -> ask again after this
+REFRESH_S = 30.0       # value known -> re-read to catch changes
 
 
 def decode_param(m):
-    """PX4 gui tham so INT32 kieu 'bytewise' trong truong float -> doi lai so nguyen."""
+    """PX4 sends INT32 parameters 'bytewise' in the float field; convert back to an integer."""
     if m.param_type in (mavlink.MAV_PARAM_TYPE_INT32, mavlink.MAV_PARAM_TYPE_UINT32,
                         mavlink.MAV_PARAM_TYPE_INT16, mavlink.MAV_PARAM_TYPE_UINT16,
                         mavlink.MAV_PARAM_TYPE_INT8, mavlink.MAV_PARAM_TYPE_UINT8):
@@ -25,22 +25,22 @@ def decode_param(m):
 
 
 def px4_profile(gps_ctrl, hgt_ref):
-    """'indoor' | 'outdoor' | 'unknown' tu 2 tham so EKF2."""
+    """'indoor' | 'outdoor' | 'unknown' from the two EKF2 parameters."""
     if gps_ctrl is None and hgt_ref is None:
         return 'unknown'
-    if gps_ctrl == 0 or hgt_ref == 2:          # GPS tat / do cao tu range sensor
+    if gps_ctrl == 0 or hgt_ref == 2:          # GPS off / height from the range sensor
         return 'indoor'
-    if gps_ctrl and hgt_ref in (0, 1):          # GPS bat, do cao baro / GPS
+    if gps_ctrl and hgt_ref in (0, 1):          # GPS on, height from baro / GPS
         return 'outdoor'
     return 'unknown'
 
 
 def resolve_environment(mode, profile, gps_fix):
-    """Moi truong ap dung -> (effective, source).
+    """Effective environment -> (effective, source).
 
-    mode 'indoor' / 'outdoor' -> nguoi dung chon tay (source 'manual').
-    mode 'auto' -> theo bo tham so PX4 dang nap (source 'px4'); chua doc duoc tham so
-    (PX4 chua ket noi / gia tri la) -> tam theo GPS fix (source 'gps').
+    mode 'indoor' / 'outdoor' -> chosen by the user (source 'manual').
+    mode 'auto' -> follows the loaded PX4 parameter set (source 'px4'); while the parameters are unknown
+    (PX4 not connected / unexpected values) it follows the GPS fix (source 'gps').
     """
     if mode in ('indoor', 'outdoor'):
         return mode, 'manual'
@@ -50,7 +50,7 @@ def resolve_environment(mode, profile, gps_fix):
 
 
 class Px4ParamWatcher(FactGroup):
-    """values: EKF2_GPS_CTRL, EKF2_HGT_REF (None = chua biet), profile."""
+    """values: EKF2_GPS_CTRL, EKF2_HGT_REF (None = unknown), profile."""
 
     def __init__(self, vehicle, links, link_name='px4'):
         super().__init__(profile='unknown', **{n: None for n in WATCHED})

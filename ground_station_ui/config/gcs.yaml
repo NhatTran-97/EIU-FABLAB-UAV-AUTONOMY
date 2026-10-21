@@ -1,38 +1,38 @@
-# Cau hinh Drone GCS. Them / bot link o day, khong can sua code.
-#   type: serial  -> port, baud  (cong chon trong tab Links duoc ghi nho, de trong o day)
+# Drone GCS configuration. Links are added / removed here, no code changes needed.
+#   type: serial  -> port, baud  (the port chosen in the Links tab is remembered; leave it empty here)
 #   type: udp     -> listen "host:port"
-#   heartbeat_v1: radio SiK 1.9 chi chen RADIO_STATUS (RSSI) khi thay heartbeat MAVLink v1
-#   enabled: false -> bo qua link
+#   heartbeat_v1: SiK 1.9 radios only inject RADIO_STATUS (RSSI) after a MAVLink v1 heartbeat
+#   enabled: false -> link ignored
 
-ui_rate_hz: 5            # tan so cap nhat giao dien
+ui_rate_hz: 5            # UI refresh rate
 
-# Ban do offline: o luu trong .mbtiles (SQLite). Co mang -> o thieu duoc tai
-# va luu lai; mat mang -> dung cache. Tai truoc vung bay: tab Map -> "Tai vung offline".
-#   url:     nguon online ({z} {x} {y}); de trong = lop chi offline (vd anh drone tu chup)
-#   file:    ten file .mbtiles trong cache_dir (mac dinh <id>.mbtiles)
-#   compose: lop ghep tu cac lop khac [nen, overlay...] (vd Hybrid); hidden: an khoi nut chon lop
-#   Lop dau tien = lop mac dinh khi mo app
-# Luu y dieu khoan: cac nguon thuong mai (Esri, Google, Bing) han che tai hang loat.
+# Offline map: tiles are stored in .mbtiles (SQLite). Online, missing tiles are downloaded and cached;
+# offline, the cache is used. Prefetch the flight area from the Map tab ("Download offline area").
+#   url:     online source ({z} {x} {y}); empty = offline-only layer (e.g. own drone orthophoto)
+#   file:    .mbtiles file name in cache_dir (default <id>.mbtiles)
+#   compose: composite of other layers [base, overlay...] (e.g. Hybrid); hidden: not shown in the layer selector
+#   The first layer is the default when the app starts.
+# Terms of use: commercial sources (Esri, Google, Bing) restrict bulk downloading.
 map:
-  cache_dir: data/maps                    # duong dan tuong doi = tinh tu goc package
-  default_center: [10.8231, 106.6297]     # khi chua co vi tri drone
+  cache_dir: data/maps                    # relative paths are resolved from the package root
+  default_center: [10.8231, 106.6297]     # used until the drone position is known
   default_zoom: 16
-  search_default: [11.052950, 106.666145]   # dien san o nhap toa do (tab Map) -- khu bay EIU
+  search_default: [11.052950, 106.666145]   # prefilled in the coordinate box (Map tab) -- EIU flying field
   max_prefetch_tiles: 30000
   layers:
-    # nen = anh Google (net hon Esri o khu bay), nhan duong / dia danh = Esri
+    # base = Google imagery (sharper than Esri at the flying field), road / place labels = Esri
     - id: hybrid
       title: Hybrid
       compose: [google_satellite, roads, places]
       attribution: Google, Esri, HERE, Garmin
-    # Anh Google: nen cua Hybrid. Dieu khoan Google khong cho phep truy cap o truc tiep.
+    # Google imagery: Hybrid base. Google terms do not allow direct tile access.
     - id: google_satellite
-      hidden: true            # chi lam nen cho Hybrid
+      hidden: true            # only used as the Hybrid base
       url: https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}
-      max_zoom: 19            # QtLocation tu phong to khi zoom sau hon
+      max_zoom: 19            # QtLocation upscales beyond this zoom
       attribution: Google
-    # Azure Maps (anh Maxar) -- can key: export AZURE_MAPS_KEY=...
-    # Khong co key -> lop chi doc cache; cache cung trong -> lop bi an
+    # Azure Maps (Maxar imagery) -- needs a key: export AZURE_MAPS_KEY=...
+    # Without a key the layer is cache-only; with an empty cache it is hidden.
     - id: azure
       title: Azure
       compose: [azure_imagery, azure_roads]
@@ -42,13 +42,13 @@ map:
       url: https://atlas.microsoft.com/map/tile?api-version=2024-04-01&tilesetId=microsoft.imagery&zoom={z}&x={x}&y={y}&tileSize=256&subscription-key={key}
       key_env: AZURE_MAPS_KEY
       max_zoom: 19
-    - id: azure_roads           # vien duong + nhan trong suot, ghep len anh ve tinh
+    - id: azure_roads           # transparent road outlines + labels over imagery
       hidden: true
       url: https://atlas.microsoft.com/map/tile?api-version=2024-04-01&tilesetId=microsoft.base.hybrid.road&zoom={z}&x={x}&y={y}&tileSize=256&subscription-key={key}
       key_env: AZURE_MAPS_KEY
       max_zoom: 22
-    # Hybrid = anh ve tinh + duong + ten duong / dia danh (giong Hybrid cua QGC / Google)
-    # Lop nhan trong suot cua Esri, chi dung de ghep vao Hybrid
+    # Hybrid = imagery + roads + road / place names (like the QGC / Google Hybrid)
+    # Transparent Esri label layer, only used inside Hybrid
     - id: roads
       hidden: true
       url: https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}
@@ -57,44 +57,52 @@ map:
       hidden: true
       url: https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}
       max_zoom: 19
-    # Anh drone tu chup (WebODM -> gdal2tiles / rio mbtiles), chi offline:
+    # Own drone orthophoto (WebODM -> gdal2tiles / rio mbtiles), offline only:
     # - id: ortho
     #   title: Ortho
     #   file: ortho.mbtiles
 
-# Vung cam / han che bay: chep file .geojson hoac OpenAir (.txt / .openair) vao thu muc duoi day
-# roi bam nut tai lai tren tab Map. Nguon: OpenAIP (vung P/R/D, CTR san bay tu AIP Viet Nam),
-# vung quan su theo giay phep bay -> ve bang geojson.io. App chi canh bao, khong chan lenh.
+# Prohibited / restricted airspace: copy .geojson or OpenAir (.txt / .openair) files into the directories
+# below, then press reload on the Map tab. Sources: OpenAIP (P/R/D zones, airport CTRs from the Vietnam AIP);
+# military zones from the flight permit can be drawn with geojson.io. The app only warns, it never blocks.
 airspace:
   dirs:
-    - data/airspace                       # trong package
+    - data/airspace                       # inside the package
 
-# Lenh bay, 2 duong rieng (khoa cheo: duong da gui lenh giu quyen den khi ve dat + disarm):
-#   - 3 nut duoi tab Map (Take-off / Land / Hold / RTL / Send WP): COMMAND_LONG qua `link` toi Jetson
-#     (sysid/compid cua drone_telemetry) -> DDS -> PX4
-#   - bam o PX4 tren thanh tren cung (Take-off / Land): COMMAND_LONG thang PX4 qua link autopilot (915)
-# Cho COMMAND_ACK, het han thi gui lai (ack_timeout_s, retries -- dung cho ca 2 duong).
+# Flight commands use two routes (cross-route lock: the route that sent a command owns control until the
+# drone has landed and disarmed):
+#   - buttons under the Map tab (Take-off / Land / Hold / RTL / Send WP): COMMAND_LONG over `link` to the
+#     Jetson (drone_telemetry sysid/compid) -> DDS -> PX4
+#   - PX4 box in the top bar (Take-off / Land): COMMAND_LONG directly to PX4 over the autopilot link (915)
+# Each command waits for COMMAND_ACK and is resent on timeout (ack_timeout_s, retries -- both routes).
 commands:
   link: jetson
   target_system: 1
   target_component: 191      # MAV_COMP_ID_ONBOARD_COMPUTER (drone_telemetry)
   ack_timeout_s: 1.5
   retries: 3
-  takeoff_altitude_indoor: 1.5    # m, mac dinh trong hop xac nhan -- khop indoor.params (tran 2.3 m)
-  takeoff_altitude_outdoor: 5      # m -- khop outdoor.params
+  takeoff_altitude_indoor: 1.5    # m, default in the confirm dialog -- matches indoor.params (2.3 m ceiling)
+  takeoff_altitude_outdoor: 5      # m -- matches outdoor.params
 
 mission:
-  # m, do cao mac dinh cua waypoint moi (so voi Home). Phai <= max_takeoff_altitude cua mission_manager
-  # (15 m, < GF_MAX_VER_DIST 20 m); vuot -> Start mission bi tu choi.
+  # m, default altitude of new waypoints (above Home). Must be <= mission_manager max_takeoff_altitude
+  # (15 m, below GF_MAX_VER_DIST 20 m), otherwise Start mission is rejected.
   default_altitude: 10
+  # m/s between waypoints, sent with Start mission (editable in the waypoint list). The Jetson limits it to
+  # mission_manager max_cruise_speed (5 m/s); PX4 MPC_XY_VEL_MAX stays the hard limit.
+  default_speed: 2.0
+  # m, distance at which a waypoint counts as reached (horizontal / vertical), sent with Start mission and
+  # editable in the waypoint list. The Jetson accepts 0.2-5 m (xy) and 0.1-3 m (z).
+  xy_tolerance: 0.75
+  z_tolerance: 0.5
 
-# Danh tinh drone (1 drone). Autopilot chi nhan tu cac link trong autopilot_links, thu tu =
-# uu tien: link dau con heartbeat thi bo qua link sau; im > 5 s -> chuyen link sau.
-# Du lieu Jetson (DRONE_*) chi nhan tu companion_link + compid 191 + cung sysid voi autopilot.
+# Drone identity (one drone). The autopilot is accepted only on autopilot_links, in priority order: while the
+# first link has heartbeats the later ones are ignored; after 5 s of silence the next link takes over.
+# Jetson data (DRONE_*) is accepted only from companion_link with compid 191 and the autopilot's sysid.
 vehicle:
   autopilot_links: [px4, sitl]
-  # sysid: 1                 # co dinh sysid autopilot (mac dinh: theo heartbeat)
-  # Jetson: radio 433 hoac UDP (SITL); lenh / waypoint gui qua link companion nhan heartbeat gan nhat
+  # sysid: 1                 # fixed autopilot sysid (default: from the heartbeat)
+  # Jetson: radio 433 or UDP (SITL); commands / waypoints use the link of the latest companion heartbeat
   companion_links: [jetson, jetson_sitl]
   companion_compid: 191
 
@@ -114,15 +122,15 @@ links:
 
   - name: sitl
     title: PX4 SITL
-    hint: mô phỏng trên laptop (make px4_sitl ...) · MAVLink thẳng
+    hint: simulation on the laptop (make px4_sitl ...) · direct MAVLink
     type: udp
     listen: 0.0.0.0:14550
-    remote: 127.0.0.1:18570     # cong GCS cua PX4 SITL; app gui heartbeat toi day de PX4 gui ve app
+    remote: 127.0.0.1:18570     # PX4 SITL GCS port; heartbeats sent here make PX4 stream to this app
 
-  # SITL: drone_telemetry chay tren laptop, gui UDP toi day thay radio 433
+  # SITL: drone_telemetry runs on the laptop and sends UDP here instead of radio 433
   # (telemetry.yaml / launch sim: port udp:127.0.0.1:14551)
   - name: jetson_sitl
     title: Jetson SITL
-    hint: drone_telemetry trên laptop (mô phỏng) · UDP
+    hint: drone_telemetry on the laptop (simulation) · UDP
     type: udp
     listen: 0.0.0.0:14551

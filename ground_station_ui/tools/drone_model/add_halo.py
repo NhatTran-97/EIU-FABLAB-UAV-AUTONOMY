@@ -1,6 +1,6 @@
-"""Them halo trang mo quanh icon drone (tuong phan tren nen anh ve tinh).
-Ve san vao PNG thay vi dung MultiEffect trong QML (can GPU shader, khong chay o moi may).
-    python3 add_halo.py <drone_top.png>      (ghi de file)"""
+"""Add a soft white halo around the drone icon (contrast on satellite imagery).
+Baked into the PNG instead of a QML MultiEffect, which needs GPU shaders that are not available everywhere.
+    python3 add_halo.py <drone_top.png>      (overwrites the file)"""
 import sys
 
 from PIL import Image, ImageFilter

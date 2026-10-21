@@ -2,24 +2,37 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 
-// Take-off / Land / Hold / RTL / Send WP qua Jetson (radio 433 -> DDS -> PX4).
-// Khoa theo commands.gates.jetson (xem core/commands/flight.py). Xac nhan: giu nut 1 s.
-// Lenh thang PX4 (915): DirectCommandPopup (TopBar).
+// Take-off / Land / Hold / RTL / Send WP via the Jetson (radio 433 -> DDS -> PX4).
+// Locked by commands.gates.jetson (see core/commands/flight.py). Confirm by holding the button 1 s.
+// Direct PX4 commands (915): DirectCommandPopup (TopBar).
 Item {
     id: root
-    readonly property var g: commands.gates.jetson || ({})      // action -> ly do khoa ('' = mo)
-    // che do test: Take-off / Land / Send WP bo qua dieu kien phia GCS (DDS, GPS, khoa cheo).
-    // Khong luu qua lan chay app.
+    readonly property var g: commands.gates.jetson || ({})      // action -> lock reason ('' = enabled)
+    // test mode: Take-off / Land / Send WP skip GCS-side checks (DDS, GPS, cross-route lock).
+    // Not persisted across app restarts.
     property bool testMode: false
     readonly property var testable: ["takeoff", "land", "upload"]
     function open(a) { return (testMode && testable.indexOf(a) >= 0) || g[a] === "" }
     readonly property var st: commands.values
     property string confirming: ""          // "" | "takeoff" | "land" | "rtl" | "upload"
-    // dang bay (PX4 EXTENDED_SYS_STATE): IN AIR / TAKING OFF / LANDING
+    // in air (PX4 EXTENDED_SYS_STATE): IN AIR / TAKING OFF / LANDING
     readonly property bool inAir: ["IN AIR", "TAKING OFF", "LANDING"].indexOf(vehicle.status.values.landed) >= 0
     readonly property var up: commands.missionUpload.values
     readonly property int wpCount: mission.items.length
-    // waypoint nam trong vung cam / han che (tinh khi mo hop xac nhan gui)
+    // mission progress from the Jetson; 'paused' = waiting for the operator (manual task or pilot took over)
+    readonly property var prog: vehicle.missionProgress.values
+    readonly property bool missionPaused: prog.valid === true && prog.state === "paused"
+    function taskSummary() {
+        var auto = 0, manual = 0
+        for (var i = 0; i < mission.items.length; i++) {
+            if (mission.items[i].task === "pick_auto") auto++
+            else if (mission.items[i].task === "pick_manual") manual++
+        }
+        if (auto + manual === 0) return "No tasks: the drone flies through every waypoint."
+        return "Pick tasks: " + (auto ? auto + " automatic" : "") + (auto && manual ? ", " : "")
+            + (manual ? manual + " manual (the pilot hooks the load, then Continue)" : "") + "."
+    }
+    // waypoints inside prohibited / restricted zones (evaluated when the upload dialog opens)
     function conflicts() {
         var out = []
         for (var i = 0; i < mission.items.length; i++) {
@@ -52,7 +65,7 @@ Item {
         case "accepted":    return "✓ " + st.label + ": accepted by Jetson" + took
         case "rejected":    return "✕ " + st.label + ": temporarily rejected" + step
         case "denied":      return "✕ " + st.label + ": denied by Jetson — see PX4 messages"
-        // Link test + UNSUPPORTED: drone_telemetry chua co ping, nhung goi da toi Jetson
+        // Link test + UNSUPPORTED: drone_telemetry has no ping handler, but the packet reached the Jetson
         case "unsupported": return st.label === "Link test" ? "✓ Link test: reached Jetson" + took
                                                               + " (old drone_telemetry — rebuild for ping)"
                                                             : "✕ " + st.label + ": not supported"
@@ -63,7 +76,7 @@ Item {
         default:            return ""
         }
     }
-    // ly do khoa cua cac nut dang hien (gop trung) -> dong trang thai khi ranh
+    // lock reasons of the visible buttons (deduplicated) -> status line when idle
     function lockText() {
         var acts = inAir ? ["upload", "mission", "hold", "rtl", "land"] : ["takeoff", "upload", "land"]
         var seen = []
@@ -85,7 +98,7 @@ Item {
         anchors.bottom: parent.bottom
         spacing: 8
 
-        // ---- hop xac nhan ----
+        // ---- confirm dialog ----
         Rectangle {
             visible: root.confirming !== ""
             Layout.alignment: Qt.AlignHCenter
@@ -122,16 +135,40 @@ Item {
                         + ". At the end the drone hovers at the last waypoint."
                     color: root.up.state === "done" ? Theme.textDim : Theme.warn; font.pixelSize: 12
                 }
+                Text {
+                    visible: root.confirming === "mission"
+                    Layout.alignment: Qt.AlignHCenter
+                    text: "Speed " + (mission.values.speed || 2).toFixed(1) + " m/s · tolerance XY "
+                        + (mission.values.xyTolerance || 0.75).toFixed(2) + " / Z " + (mission.values.zTolerance || 0.5).toFixed(2)
+                        + " m (waypoint list)"
+                    color: Theme.text; font.pixelSize: 12
+                }
+                Text {
+                    visible: root.confirming === "mission"
+                    Layout.alignment: Qt.AlignHCenter; Layout.maximumWidth: 420; wrapMode: Text.WordWrap
+                    text: root.taskSummary()
+                    color: Theme.textDim; font.pixelSize: 12
+                }
+                // mission options, fixed for the whole mission; the Jetson refuses options it cannot run
+                CheckBox {
+                    id: avoidBox
+                    visible: root.confirming === "mission"
+                    Layout.alignment: Qt.AlignHCenter
+                    text: "Obstacle avoidance"
+                    checked: false
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Every leg uses the obstacle_avoidance node. Refused if the node is not running or not allowed on the drone."
+                }
                 RowLayout {
                     visible: root.confirming === "takeoff"
                     Layout.alignment: Qt.AlignHCenter
                     Text { text: "Altitude"; color: Theme.textDim; font.pixelSize: 12 }
-                    // don vi noi bo = dm (SpinBox chi nhan so nguyen) -> buoc 0.5 m, hien 1 so le
+                    // stored in dm (SpinBox only takes integers) -> 0.5 m steps, one decimal shown
                     SpinBox {
                         id: altBox
                         readonly property real meters: value / 10
                         from: 5; to: 1200; stepSize: 5; editable: true
-                        // mac dinh theo moi truong (Cai dat -> Moi truong bay)
+                        // default per environment (Settings -> Flight environment)
                         value: Math.round((commands.takeoffAltitudes[flightEnv.state.effective] || 1.5) * 10)
                         textFromValue: (v, locale) => (v / 10).toFixed(1)
                         valueFromText: (text, locale) => Math.round(parseFloat(text.replace(",", ".")) * 10)
@@ -139,7 +176,7 @@ Item {
                     }
                     Text { text: "m"; color: Theme.textDim }
                 }
-                // ---- Pre-flight check (chi khi Take-off): van de nghiem trong -> khoa nut ----
+                // ---- pre-flight check (Take-off only): critical problems lock the button ----
                 ColumnLayout {
                     objectName: "preflight"
                     visible: root.confirming === "takeoff"
@@ -187,11 +224,11 @@ Item {
                     visible: root.confirming === "takeoff" || root.confirming === "land" || root.confirming === "rtl" || root.confirming === "mission"
                     spacing: 10
                     Button { text: "Cancel"; onClicked: root.confirming = "" }
-                    // giu 1 giay de xac nhan
+                    // hold 1 s to confirm
                     Rectangle {
                         id: holdBtn
                         objectName: "holdConfirm"
-                        // khoa: gates thay doi khi hop dang mo, hoac pre-flight co loi critical (Take-off)
+                        // locked: gates changed while the dialog is open, or a critical pre-flight problem (Take-off)
                         readonly property bool testing: root.testMode && root.testable.indexOf(root.confirming) >= 0
                         readonly property string gateWhy: testing ? "" : (root.g[root.confirming] || "")
                         readonly property bool blocked: gateWhy !== ""
@@ -221,7 +258,7 @@ Item {
                                 else if (holdBtn.testing) commands.testLand()
                                 else if (root.confirming === "takeoff") commands.takeoff(altBox.meters)
                                 else if (root.confirming === "rtl") commands.rtl()
-                                else if (root.confirming === "mission") commands.startMission()
+                                else if (root.confirming === "mission") commands.startMission(avoidBox.checked)
                                 else commands.land()
                                 root.confirming = ""
                                 holdBtn.progress = 0
@@ -238,7 +275,7 @@ Item {
             }
         }
 
-        // ---- bang test: gui Jetson, bo qua dieu kien phia GCS ----
+        // ---- test panel: send to the Jetson, skipping GCS-side checks ----
         Rectangle {
             objectName: "testPanel"
             visible: root.testMode && root.confirming === ""
@@ -268,7 +305,7 @@ Item {
                     ToolTip.visible: hovered; ToolTip.text: "Jetson replies ACK + message, does nothing with PX4"
                     onClicked: commands.ping()
                 }
-                // STATUSTEXT moi nhat tu Jetson / PX4
+                // latest STATUSTEXT from the Jetson / PX4
                 Text { text: "Latest messages"; color: Theme.textDim; font.pixelSize: 11 }
                 Repeater {
                     model: Math.min(3, vehicle.messages.items.length)
@@ -284,7 +321,48 @@ Item {
             }
         }
 
-        // ---- 2 nut chinh ----
+        // ---- mission progress; Continue after a manual task or a pause ----
+        Rectangle {
+            objectName: "missionProgress"
+            visible: root.prog.valid === true && (root.prog.state === "active" || root.prog.state === "paused")
+            Layout.alignment: Qt.AlignHCenter
+            implicitWidth: progRow.implicitWidth + 24; implicitHeight: progRow.implicitHeight + 16
+            radius: Theme.radius
+            color: "#f2161b22"
+            border.color: root.missionPaused ? Theme.warn : Theme.border; border.width: root.missionPaused ? 2 : 1
+            RowLayout {
+                id: progRow
+                anchors.centerIn: parent
+                spacing: 12
+                ColumnLayout {
+                    spacing: 2
+                    Text {
+                        text: (root.missionPaused ? "⏸ Mission waiting" : "▶ Mission") + " · waypoint "
+                            + root.prog.seq + "/" + root.prog.total
+                        color: root.missionPaused ? Theme.warn : Theme.text; font.pixelSize: 14; font.bold: true
+                    }
+                    Text {
+                        visible: root.missionPaused && root.prog.text !== ""
+                        Layout.maximumWidth: 360; wrapMode: Text.WordWrap
+                        text: root.prog.text
+                        color: Theme.text; font.pixelSize: 12
+                    }
+                }
+                Button {
+                    objectName: "continueBtn"
+                    visible: root.missionPaused
+                    text: "▶  Continue"
+                    highlighted: true
+                    enabled: root.open("continue")
+                    ToolTip.visible: hovered
+                    ToolTip.text: root.g["continue"] ? root.g["continue"]
+                        : "Manual task done (or resume after a pause): the drone takes back OFFBOARD and goes on"
+                    onClicked: commands.continueMission()
+                }
+            }
+        }
+
+        // ---- two main buttons ----
         RowLayout {
             Layout.alignment: Qt.AlignHCenter
             spacing: 12
@@ -303,7 +381,7 @@ Item {
             CmdBtn {
                 objectName: "takeoffBtn"
                 label: "⬆  Take-off"; tint: Theme.ok
-                // dang bay: an Take-off
+                // in air: Take-off hidden
                 visible: !root.inAir
                 enabled: root.open("takeoff")
                 active: root.confirming === "takeoff"
@@ -320,7 +398,7 @@ Item {
                     root.confirming = root.confirming === "upload" ? "" : "upload"
                 }
             }
-            // dang bay: Hold (dung ngay, khong can xac nhan) + RTL (can GPS -> khoa khi trong nha)
+            // in air: Hold (immediate, no confirmation) + RTL (needs GPS -> locked indoors)
             CmdBtn {
                 objectName: "holdModeBtn"
                 visible: root.inAir
@@ -354,7 +432,7 @@ Item {
             }
             CmdBtn {
                 objectName: "testBtn"
-                // luon mo: ping Jetson
+                // always enabled: ping the Jetson
                 label: root.testMode ? "🧪  Test ON" : "🧪  Test"; tint: root.testMode ? Theme.warn : Theme.textDim
                 implicitWidth: root.testMode ? 120 : 96
                 active: root.testMode
@@ -362,10 +440,10 @@ Item {
             }
         }
 
-        // ---- trang thai lenh ----
+        // ---- command status ----
         Rectangle {
             readonly property string busyMsg: [root.stateText(), root.uploadText()].filter(t => t !== "").join("   ·   ")
-            // khi ranh: ly do khoa / canh bao che do test
+            // when idle: lock reasons / test-mode warning
             readonly property string msg: busyMsg !== "" ? busyMsg
                                         : root.testMode ? "🧪 TEST MODE — GCS checks off, buttons send straight to Jetson"
                                         : root.lockText()

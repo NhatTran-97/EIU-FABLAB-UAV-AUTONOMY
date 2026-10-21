@@ -1,8 +1,9 @@
-"""EnvironmentAdapter: moi truong bay (Tu dong / Trong nha / Ngoai troi) cho ca app.
+"""EnvironmentAdapter: flight environment (Auto / Indoor / Outdoor) for the whole app.
 
-Tu dong: theo bo tham so PX4 dang nap (EKF2_GPS_CTRL / EKF2_HGT_REF); chua doc duoc thi tam
-theo GPS fix. Quyet dinh: nguon do cao hien thi, do cao cat canh mac dinh, mau canh bao GPS,
-va canh bao khi PX4 dang nap bo tham so khong khop (vd ra ngoai troi ma quen nap outdoor.params).
+Auto follows the loaded PX4 parameter set (EKF2_GPS_CTRL / EKF2_HGT_REF), or the GPS fix until the
+parameters are read. It drives the displayed altitude source, the default take-off altitude, the GPS
+warning colour, and a warning when the loaded PX4 parameters do not match (e.g. outdoors with
+outdoor.params not loaded).
 """
 
 from PySide6.QtCore import Property, QObject, QSettings, Signal, Slot
@@ -27,14 +28,14 @@ class EnvironmentAdapter(QObject):
         self._state = {}
         self.flush(force=True)
 
-    # --- tinh trang thai -------------------------------------------------------------------
+    # --- state computation ----------------------------------------------------------------
     def _compute(self):
         fix = self.gps.values.get('fixType', 0) or 0
         profile = self.params.values['profile']
         effective, source = resolve_environment(self._mode, profile, fix)
         mismatch = ''
-        # Chi canh bao: PX4 cau hinh trong nha (GPS tat / do cao range MTF-02) + moi truong ngoai troi.
-        # Cau hinh GPS + baro dung trong nha khong nguy hiem -> khong canh bao.
+        # Warn only when PX4 is configured for indoors (GPS off / MTF-02 range height) but flying outdoors.
+        # A GPS + baro configuration used indoors is not dangerous, so it is not flagged.
         if profile == 'indoor' and effective == 'outdoor':
             mismatch = ("PX4 is using the indoor (optical-flow, GPS off) config but the app is in outdoor "
                         "mode — load config/px4/outdoor.params in QGC or change Flight environment in Settings")
@@ -45,7 +46,7 @@ class EnvironmentAdapter(QObject):
 
     def flush(self, force=False):
         state = self._compute()
-        # nguon do cao: theo moi truong neu da biet; chua biet -> FlightGroup chon theo GPS fix
+        # altitude source: from the environment when known; otherwise FlightGroup decides by GPS fix
         self.flight.set_mode(state['effective'] if state['source'] != 'gps' else 'auto')
         if force or state != self._state:
             self._state = state

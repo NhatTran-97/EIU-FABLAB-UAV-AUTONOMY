@@ -2,23 +2,23 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 
-// The Telemetry: tieu de + nguon du lieu + tan so / STALE, ben duoi la cac dong "nhan  gia tri".
-// rows: [[label, value], ...]  (value "" / null -> "—").  Het du lieu (stale) -> lam mo so cu.
+// Telemetry card: title + data source + rate / STALE, followed by "label  value" rows.
+// rows: [[label, value], ...]  (value "" / null -> "—"). Stale data is dimmed.
 Rectangle {
     id: card
     property string title: ""
-    property url icon: ""               // bieu tuong thiet bi canh tieu de (tuy chon)
-    property color iconBg: "#5b6b82"     // nen tron sau icon: sang cho thiet bi mau toi, toi cho icon sang
-    property string source: ""          // vd "PX4 · VFR_HUD" -- hien o tooltip
-    property real rateHz: -1             // < 0: khong hien
-    property real ageS: -1               // < 0: chua tung nhan
+    property url icon: ""               // component icon next to the title (optional)
+    property color iconBg: "#5b6b82"     // round background behind the icon: light for dark devices, dark for light icons
+    property string source: ""          // e.g. "PX4 · VFR_HUD", shown in the tooltip
+    property real rateHz: -1             // < 0: hidden
+    property real ageS: -1               // < 0: never received
     property real staleAfter: 2.5
-    property real expectedHz: 0          // > 0: tan so thap hon 1/2 muc nay -> SLOW (vang)
+    property real expectedHz: 0          // > 0: rate below half of this -> SLOW (yellow)
     property var rows: []
-    property alias extra: extraSlot.data // noi dung them (vd chan troi nho)
+    property alias extra: extraSlot.data // extra content (e.g. a small horizon)
     readonly property bool stale: ageS < 0 || ageS > staleAfter
     readonly property bool slow: !stale && expectedHz > 0 && rateHz >= 0 && rateHz < expectedHz * 0.5
-    // FRESH xanh · SLOW vang · STALE do · NO DATA xam
+    // FRESH green · SLOW yellow · STALE red · NO DATA grey
     readonly property color stateColor: ageS < 0 ? Theme.idle : (stale ? Theme.error : (slow ? Theme.warn : Theme.ok))
 
     implicitWidth: 340
@@ -34,9 +34,9 @@ Rectangle {
 
         RowLayout {
             Layout.fillWidth: true
-            Layout.preferredHeight: 40          // moi the cung chieu cao tieu de -> cac dong so thang hang
+            Layout.preferredHeight: 40          // same title height on every card so value rows line up
             spacing: 10
-            // nen tron sang nhe: thiet bi mau toi van noi tren the toi
+            // light round background so dark devices stand out on the dark card
             Rectangle {
                 visible: card.icon != ""
                 Layout.preferredWidth: 40; Layout.preferredHeight: 40; radius: 20
@@ -71,7 +71,7 @@ Rectangle {
         GridLayout {
             Layout.fillWidth: true
             columns: 2; columnSpacing: 16; rowSpacing: 4
-            opacity: card.stale ? 0.45 : 1          // stale: lam mo
+            opacity: card.stale ? 0.45 : 1          // stale: dimmed
             Repeater {
                 model: card.rows.length * 2
                 delegate: Text {
@@ -88,7 +88,7 @@ Rectangle {
                 }
             }
         }
-        Item { Layout.fillHeight: true }       // the bi keo cao bang hang -> noi dung van o tren
+        Item { Layout.fillHeight: true }       // card stretched to the row height -> content stays at the top
         Item { id: extraSlot; Layout.fillWidth: true; implicitHeight: childrenRect.height; visible: children.length > 0 }
     }
 }

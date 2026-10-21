@@ -1,6 +1,6 @@
-"""STEP -> STL, 1 file / volume (de gan vat lieu rieng trong convert_part.py). Dung libgmsh tu wheel da giai nen.
+"""STEP -> STL, one file per volume (so convert_part.py can assign materials). Uses libgmsh from an unpacked wheel.
 
-    python3 step2stl.py <thu_muc_wheel> <file.stp> <thu_muc_ra>
+    python3 step2stl.py <wheel_dir> <file.stp> <out_dir>
 """
 import os, sys, ctypes
 W = sys.argv[1]
@@ -17,7 +17,7 @@ gmsh.option.setNumber('Mesh.MeshSizeMax', 3.0)
 gmsh.option.setNumber('Mesh.MeshSizeMin', 0.3)
 gmsh.model.mesh.generate(2)
 out = sys.argv[3]; os.makedirs(out, exist_ok=True)
-for dim, tag in vols:                                  # moi volume 1 STL (be mat bao quanh)
+for dim, tag in vols:                                  # one STL per volume (its bounding surface)
     surf = [s for _, s in gmsh.model.getBoundary([(dim, tag)], oriented=False)]
     pg = gmsh.model.addPhysicalGroup(2, surf)
     gmsh.option.setNumber('Mesh.SaveAll', 0)

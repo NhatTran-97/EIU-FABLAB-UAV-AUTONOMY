@@ -13,7 +13,7 @@ ApplicationWindow {
     title: "EIU Drone GCS"
     color: Theme.bg
 
-    // Mau cho cac control cua style Basic (ComboBox, Button...) theo nen toi
+    // Colours for Basic-style controls (ComboBox, Button...) on the dark background
     palette.window: Theme.panel
     palette.base: Theme.panelAlt
     palette.button: Theme.panelAlt
@@ -50,11 +50,11 @@ ApplicationWindow {
                 objectName: "nav"
                 Layout.fillHeight: true
                 items: features
-                // trang mac dinh: Map
+                // default page: Map
                 Component.onCompleted: currentIndex = win.featureIndex("map")
             }
 
-            // Moi tinh nang 1 trang, sinh tu danh sach `features` (Python)
+            // one page per feature, generated from the `features` list (Python)
             StackLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -73,6 +73,6 @@ ApplicationWindow {
         }
     }
 
-    // splash ~7 s, click de bo qua
+    // splash ~7 s, click to skip
     Splash {}
 }

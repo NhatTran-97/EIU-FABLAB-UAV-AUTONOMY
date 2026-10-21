@@ -1,9 +1,9 @@
-"""Doi frame PX4 (NED, than drone FRD) -> ROS / ve 3D (ENU, than drone FLU).
+"""PX4 frame conversions (NED, FRD body) to ROS / 3D view frames (ENU, FLU body).
 
-Giong px4_ros_com/frame_transforms: chi doi O MOT CHO khi nhan du lieu PX4; lidar, ArUco,
-TF tu Jetson da theo quy uoc ROS (ENU / FLU) nen dung thang.
+Same as px4_ros_com/frame_transforms: convert once, when PX4 data arrives; lidar, ArUco and TF data
+from the Jetson already follow ROS conventions (ENU / FLU) and are used as is.
 
-Quaternion theo thu tu (w, x, y, z).
+Quaternions are ordered (w, x, y, z).
 """
 
 import math
@@ -23,7 +23,7 @@ def q_mul(a, b):
 
 
 def q_rotate(q, v):
-    """Xoay vector v bang quaternion q."""
+    """Rotate vector v by quaternion q."""
     w, x, y, z = q
     p = q_mul(q_mul(q, (0.0, *v)), (w, -x, -y, -z))
     return p[1], p[2], p[3]
@@ -34,11 +34,11 @@ def ned_to_enu(x, y, z):
 
 
 def q_ned_frd_to_enu_flu(q):
-    """Tu the PX4 (FRD -> NED) -> tu the ROS (FLU -> ENU)."""
+    """PX4 attitude (FRD -> NED) to ROS attitude (FLU -> ENU)."""
     return q_mul(q_mul(NED_ENU_Q, q), AIRCRAFT_BASELINK_Q)
 
 
 def yaw_enu_deg(q_enu):
-    """Goc quay quanh truc Up (0 = huong East, 90 = North) -- tien kiem tra."""
+    """Rotation about the Up axis (0 = East, 90 = North), for checks."""
     w, x, y, z = q_enu
     return math.degrees(math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))

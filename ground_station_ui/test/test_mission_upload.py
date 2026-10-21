@@ -42,7 +42,7 @@ def test_resend_last_on_timeout_then_give_up(monkeypatch):
     up = MissionUploader(FakeLinks(jetson=link), timeout_s=1.0, retries=3)
     up.upload(TARGET, WPS)
     up.on_request(req(0), 'jetson')
-    for t in (11.1, 12.2):              # mat goi -> gui lai ITEM 0
+    for t in (11.1, 12.2):              # lost packet -> ITEM 0 resent
         now[0] = t
         up.tick(t)
     assert [m.get_type() for m in link.sent] == ['MISSION_COUNT'] + ['MISSION_ITEM_INT'] * 3

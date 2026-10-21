@@ -1,10 +1,11 @@
-"""MessageRouter: module nao can loai message nao thi tu dang ky -- khong co chuoi if/elif.
+"""MessageRouter: each module subscribes to the message types it needs, no if/elif chains.
 
     router.subscribe('GPS_RAW_INT', gps.on_gps)
-    router.subscribe('*', link_manager.on_any)        # moi message
-    router.dispatch('px4', [msg1, msg2, ...])         # goi tu main thread, theo lo
+    router.subscribe('*', link_manager.on_any)        # every message
+    router.dispatch('px4', [msg1, msg2, ...])         # main thread, batched
 
-Handler: handler(msg, link_name). Mot handler loi khong lam hong ca lo (log + bo qua).
+Handlers are called as handler(msg, link_name). A failing handler is logged and skipped; the rest of
+the batch is still dispatched.
 """
 
 import logging
@@ -33,5 +34,5 @@ class MessageRouter:
         try:
             handler(msg, link_name)
         except Exception:
-            log.exception('Handler %s loi voi %s', getattr(handler, '__qualname__', handler),
+            log.exception('Handler %s failed on %s', getattr(handler, '__qualname__', handler),
                           msg.get_type())

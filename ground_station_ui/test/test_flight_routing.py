@@ -1,5 +1,5 @@
-"""Lenh bay 2 duong (o PX4 -> thang PX4 qua 915 / 3 nut duoi -> Jetson 433): khoa cheo, dieu kien
-tung nut, lenh nhieu buoc."""
+"""Two-route flight commands (PX4 box -> direct to PX4 over 915 / buttons under the map -> Jetson 433):
+cross-route lock, per-button preconditions, multi-step commands."""
 
 import math
 
@@ -66,13 +66,13 @@ def test_check_state():
     assert check_state('takeoff', 'IN AIR') == 'already flying'
     assert check_state('land', 'ON GROUND') == 'vehicle is on the ground'
     assert check_state('hold', 'IN AIR') == ''
-    assert check_state('land', '—') == ''                    # chua biet -> de PX4 / Jetson quyet
+    assert check_state('land', '—') == ''                    # unknown -> left to PX4 / Jetson
 
 
 def test_px4_takeoff_steps():
     steps = px4_steps('takeoff', 5.0, armed=False, amsl=None)
     assert [c for c, _ in steps] == [mavlink.MAV_CMD_COMPONENT_ARM_DISARM, mavlink.MAV_CMD_NAV_TAKEOFF]
-    assert math.isnan(steps[1][1][6])                         # khong GPS -> NaN = MIS_TAKEOFF_ALT
+    assert math.isnan(steps[1][1][6])                         # no GPS -> NaN = MIS_TAKEOFF_ALT
     steps = px4_steps('takeoff', 5.0, armed=True, amsl=12.0)
     assert [c for c, _ in steps] == [mavlink.MAV_CMD_NAV_TAKEOFF] and steps[0][1][6] == 17.0  # AMSL
 
@@ -86,18 +86,18 @@ def test_direct_takeoff_arm_then_takeoff():
     d = s['px4'].values
     assert d['route'] == 'PX4 · 915' and (d['step'], d['steps']) == (1, 2)
 
-    s['px4'].on_ack(ack(400, mavlink.MAV_RESULT_ACCEPTED), 'px4')    # ARM xong -> NAV_TAKEOFF
+    s['px4'].on_ack(ack(400, mavlink.MAV_RESULT_ACCEPTED), 'px4')    # ARM done -> NAV_TAKEOFF
     m = px4.sent[-1]
     assert (m.command, m.param7, m.confirmation) == (22, 25.0, 0)
     s['px4'].on_ack(ack(22, mavlink.MAV_RESULT_ACCEPTED), 'px4')
     assert s['px4'].values['state'] == 'accepted'
-    assert s['jetson'].values['state'] == 'idle'               # 2 sender rieng
+    assert s['jetson'].values['state'] == 'idle'               # two separate senders
 
 
 def test_direct_arm_denied_stops_sequence():
     fc, s, px4, _ = make()
     fc.execute('px4', 'takeoff', 1.5)
-    s['px4'].on_ack(ack(400, mavlink.MAV_RESULT_DENIED), 'px4')   # pre-arm check fail
+    s['px4'].on_ack(ack(400, mavlink.MAV_RESULT_DENIED), 'px4')   # pre-arm check failed
     assert s['px4'].values['state'] == 'denied' and len(px4.sent) == 1
 
 
@@ -111,18 +111,18 @@ def test_jetson_buttons_send_to_jetson():
 def test_jetson_gates():
     fc, *_ = make(jetson_alive=False)
     assert fc.blocker('jetson', 'takeoff') == 'Jetson not connected (radio 433)'
-    assert fc.blocker('px4', 'takeoff') == ''                 # duong PX4 khong phu thuoc Jetson
+    assert fc.blocker('px4', 'takeoff') == ''                 # PX4 route does not depend on the Jetson
     fc, *_ = make(dds=None)
     assert fc.blocker('jetson', 'land') == 'Jetson has no PX4 data (DDS)'
-    assert fc.blocker('jetson', 'upload') == ''               # Send WP khong can DDS
+    assert fc.blocker('jetson', 'upload') == ''               # Send WP does not need DDS
     fc, *_ = make(dds='stale')
     assert fc.blocker('jetson', 'takeoff') == 'Jetson has no PX4 data (DDS)'
-    # GPS: ngoai troi can fix de bat dau (Take-off / Send WP); Land / Hold khong bao gio bi chan vi GPS
+    # GPS: outdoors a fix is needed to start (Take-off / Send WP); Land / Hold are never blocked by GPS
     fc, *_ = make(fix=0)
     g = fc.gates()['jetson']
     assert g['takeoff'] == g['upload'] == 'no GPS fix' and g['rtl'] == 'RTL needs GPS fix'
     assert g['land'] == g['hold'] == ''
-    fc, *_ = make(fix=0, env='indoor')                        # trong nha: khong can GPS (tru RTL)
+    fc, *_ = make(fix=0, env='indoor')                        # indoors: no GPS needed (except RTL)
     g = fc.gates()['jetson']
     assert g['takeoff'] == g['upload'] == '' and g['rtl'] == 'RTL needs GPS fix'
 
@@ -132,11 +132,11 @@ def test_cross_lock_after_takeoff():
     fc.execute('jetson', 'takeoff', 5.0)
     assert fc.lock.owner == 'jetson'
     assert fc.blocker('px4', 'land') == 'flight controlled from Jetson · 433'
-    assert not fc.execute('px4', 'land')                      # bi chan, khong gui
+    assert not fc.execute('px4', 'land')                      # blocked, not sent
     assert px4.sent == [] and s['px4'].values['state'] == 'blocked'
-    assert fc.blocker('jetson', 'land') == ''                 # duong giu quyen van dung duoc
+    assert fc.blocker('jetson', 'land') == ''                 # the owning route still works
 
-    # duong giu quyen mat ket noi -> duong kia duoc dung (khong de drone khong ai dieu khien)
+    # owning route lost its link -> the other route is allowed (the drone is never left without control)
     fc.vehicle.groups['companion'].values['linkAlive'] = False
     assert fc.blocker('px4', 'land') == ''
 
@@ -145,24 +145,24 @@ def test_lock_release_after_flight():
     lock = CommandLock()
     lock.claim('px4')
     lock.update(0.0, armed=False, landed='ON GROUND', owner_state='sending')
-    assert lock.owner == 'px4'                                 # dang gui
+    assert lock.owner == 'px4'                                 # sending
     lock.update(1.0, armed=True, landed='TAKING OFF', owner_state='accepted')
     lock.update(30.0, armed=True, landed='IN AIR', owner_state='accepted')
-    assert lock.owner == 'px4'                                 # dang bay: giu quyen
+    assert lock.owner == 'px4'                                 # in air: ownership kept
     lock.update(60.0, armed=False, landed='ON GROUND', owner_state='accepted')
-    assert lock.owner is None                                  # ve dat + disarm: nha
+    assert lock.owner is None                                  # landed + disarmed: released
 
 
 def test_lock_release_when_command_fails_or_never_arms():
     lock = CommandLock()
     lock.claim('jetson')
     lock.update(0.0, armed=False, landed='ON GROUND', owner_state='denied')
-    assert lock.owner is None                                  # bi tu choi: chua bay
+    assert lock.owner is None                                  # rejected: never flew
     lock.claim('px4')
     lock.update(0.0, armed=False, landed='ON GROUND', owner_state='accepted')
     assert lock.owner == 'px4'
     lock.update(LINK_TIMEOUT_S + 0.5, armed=False, landed='ON GROUND', owner_state='accepted')
-    assert lock.owner is None                                  # chap nhan nhung khong arm
+    assert lock.owner is None                                  # accepted but never armed
 
 
 def test_state_check_blocks_both_routes():
@@ -175,9 +175,9 @@ def test_state_check_blocks_both_routes():
 
 
 def test_test_mode_bypasses_gcs_gates_and_ping():
-    """Nut 🧪: trong phong thi nghiem (khong DDS, khong GPS) van gui duoc toi Jetson."""
+    """Test button: in the lab (no DDS, no GPS) commands still reach the Jetson."""
     fc, s, px4, jet = make(dds=None, fix=0, landed='—')
-    assert fc.blocker('jetson', 'takeoff')                     # nut thuong bi khoa
+    assert fc.blocker('jetson', 'takeoff')                     # normal buttons are locked
     assert fc.execute('jetson', 'takeoff', 1.5, test=True)
     m = jet.sent[-1]
     assert (m.command, m.param7) == (22, 1.5) and s['jetson'].values['label'] == 'Take-off 1.5 m [TEST]'
@@ -189,10 +189,10 @@ def test_test_mode_bypasses_gcs_gates_and_ping():
 
 def test_start_mission_gates_and_command():
     fc, s, px4, jet = make(landed='ON GROUND')
-    assert not fc.execute('jetson', 'mission')                 # o dat
+    assert not fc.execute('jetson', 'mission')                 # on the ground
     assert s['jetson'].values['message'] == 'vehicle is on the ground'
     fc, s, px4, jet = make(landed='IN AIR', armed=True, fix=0)
-    assert fc.blocker('jetson', 'mission') == 'mission needs GPS fix'   # waypoint la toa do GPS
+    assert fc.blocker('jetson', 'mission') == 'mission needs GPS fix'   # waypoints are GPS coordinates
     fc, s, px4, jet = make(landed='IN AIR', armed=True, fix=3)
     assert fc.execute('jetson', 'mission')
     m = jet.sent[-1]

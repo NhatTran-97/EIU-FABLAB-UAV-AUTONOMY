@@ -1,12 +1,12 @@
-"""Vehicle: 1 drone = cac FactGroup + nhan dien nguon du lieu (cau hinh `vehicle:` trong gcs.yaml).
+"""Vehicle: one drone = its FactGroups + identification of the data sources (gcs.yaml `vehicle:`).
 
-Autopilot = (link, sysid, compid) cua HEARTBEAT autopilot, chi tu link trong `autopilot_links`
-  (thu tu = uu tien; rong = moi link tru companion). Chuyen autopilot khi link uu tien hon xuat hien
-  hoac autopilot hien tai im > REIDENTIFY_S.
-Companion (Jetson) = message tu `companion_links`, compid `companion_compid`, sysid = autopilot
-  (hoac `companion_sysid`). DRONE_* tu nguon khac bi bo.
+Autopilot = (link, sysid, compid) of the autopilot HEARTBEAT, accepted only on `autopilot_links`
+  (order = priority; empty = every link except the companion's). Switches when a higher-priority link
+  appears or the current autopilot is silent for REIDENTIFY_S.
+Companion (Jetson) = messages on `companion_links` with compid `companion_compid` and the autopilot's
+  sysid (or `companion_sysid`). DRONE_* messages from other sources are dropped.
 
-Group loc nguon qua is_autopilot(msg, link) / is_companion(msg, link). Ho tro 1 drone.
+Groups filter by source with is_autopilot(msg, link) / is_companion(msg, link). One drone only.
 """
 
 import time
@@ -19,9 +19,9 @@ REIDENTIFY_S = 5.0
 class Vehicle:
     def __init__(self, router, cfg=None):
         cfg = cfg or {}
-        self.autopilot_links = list(cfg.get('autopilot_links') or [])   # [] = moi link tru companion
+        self.autopilot_links = list(cfg.get('autopilot_links') or [])   # [] = every link except the companion's
         self.fixed_sysid = cfg.get('sysid')
-        # companion_link: link cua heartbeat companion gan nhat -> dich gui lenh / waypoint
+        # companion_link: link of the latest companion heartbeat, used for commands / waypoints
         links = cfg.get('companion_links') or [cfg.get('companion_link', 'jetson')]
         self.companion_links = [str(ln) for ln in links]
         self.companion_link = self.companion_links[0]
@@ -30,7 +30,7 @@ class Vehicle:
         self.sysid = None
         self.compid = None
         self.link = None
-        self._seen = None            # t heartbeat autopilot cuoi (monotonic)
+        self._seen = None            # time of the last autopilot heartbeat (monotonic)
         self.on_identity_change = []
         self.groups = {
             'status': groups.StatusGroup(self),
@@ -45,6 +45,7 @@ class Vehicle:
             'localPose': groups.LocalPoseGroup(self),
             'gimbal': groups.GimbalGroup(self),
             'track': groups.TrackGroup(self, cfg.get('track_dir')),
+            'missionProgress': groups.MissionProgressGroup(self),
         }
         for g in self.groups.values():
             g.attach(router)
@@ -59,7 +60,7 @@ class Vehicle:
         return self.autopilot_links.index(link) if link in self.autopilot_links else len(self.autopilot_links)
 
     def identify(self, sysid, compid, link, now=None):
-        """Xu ly HEARTBEAT autopilot. True neu (link, sysid, compid) la autopilot dang chon."""
+        """Handle an autopilot HEARTBEAT. True if (link, sysid, compid) is the selected autopilot."""
         now = time.monotonic() if now is None else now
         if not self.link_allowed(link) or (self.fixed_sysid is not None and sysid != self.fixed_sysid):
             return False
@@ -84,12 +85,12 @@ class Vehicle:
                 and msg.get_srcComponent() == self.compid
                 and (link is None or link == self.link))
 
-    # --- vi tri toan cuc: autopilot uu tien, companion du phong --------------------------------
+    # --- global position: autopilot preferred, companion as fallback ------------------------
     GLOBAL_FALLBACK_S = 2.0
 
     def accept_global(self, msg, link):
-        """Chap nhan GLOBAL_POSITION_INT: tu autopilot -> luon; tu companion -> khi GLOBAL_POSITION_INT
-        cua autopilot stale > GLOBAL_FALLBACK_S."""
+        """Accept GLOBAL_POSITION_INT always from the autopilot, and from the companion only when the
+        autopilot's GLOBAL_POSITION_INT is stale > GLOBAL_FALLBACK_S."""
         now = time.monotonic()
         if self.is_autopilot(msg, link):
             self._ap_global_at = now

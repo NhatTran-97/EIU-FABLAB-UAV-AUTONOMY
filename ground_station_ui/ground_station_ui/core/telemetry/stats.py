@@ -1,4 +1,4 @@
-"""Tan so + tuoi tung loai message (de the Telemetry hien 'x Hz' hoac STALE thay vi so cu)."""
+"""Rate and age per message type (so Telemetry cards show 'x Hz' or STALE instead of old values)."""
 
 import time
 from collections import deque
@@ -8,8 +8,8 @@ class MessageStats:
     WINDOW_S = 3.0
 
     def __init__(self):
-        self._last = {}       # type -> thoi diem nhan cuoi
-        self._times = {}      # type -> [thoi diem trong cua so]
+        self._last = {}       # type -> last receive time
+        self._times = {}      # type -> receive times within the window
 
     def attach(self, router):
         router.subscribe('*', self.on_msg)
@@ -38,10 +38,10 @@ class MessageStats:
 
 
 class History:
-    """Lich su cac tin hieu (lay mau moi tick UI) cho do thi Real-time."""
+    """Signal history (sampled every UI tick) for the real-time plot."""
 
     def __init__(self, signals, max_s=300.0):
-        self.signals = signals        # name -> ham () -> float | None
+        self.signals = signals        # name -> callable () -> float | None
         self.max_s = max_s
         self.data = {k: deque() for k in signals}
 

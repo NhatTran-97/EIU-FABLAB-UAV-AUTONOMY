@@ -1,19 +1,21 @@
-"""Lenh bay: 2 duong, khoa cheo, dieu kien tung lenh.
+"""Flight commands: two routes, a cross-route lock and per-command preconditions.
 
-Duong:
-    px4    : radio 915 -> PX4. Take-off = [ARM neu chua arm] -> NAV_TAKEOFF; ACK tu PX4.
-    jetson : radio 433 -> drone_telemetry -> uXRCE-DDS -> PX4. Gom ca Send WP.
+Routes:
+    px4    : radio 915 -> PX4. Take-off = [ARM if disarmed] -> NAV_TAKEOFF; ACK from PX4.
+    jetson : radio 433 -> drone_telemetry -> uXRCE-DDS -> PX4. Also carries Send WP.
 
-Khoa cheo (CommandLock): duong gui lenh bay (Take-off / Land / Hold / RTL) giu quyen den khi ve dat +
-disarm; duong kia bi chan, tru khi duong giu quyen mat link. RC luon uu tien.
+Cross-route lock (CommandLock): the route that sent a flight command (Take-off / Land / Hold / RTL) owns
+control until the drone has landed and disarmed; the other route is blocked unless the owner loses its
+link. RC always has priority.
 
-Che do test: ping Jetson (MAV_CMD_USER_1 -> ACK + STATUSTEXT, khong qua PX4); Take-off / Land qua Jetson
-bo qua dieu kien phia GCS (DDS, GPS, khoa cheo, trang thai bay). Jetson van tu kiem tra an toan.
+Test mode: ping the Jetson (MAV_CMD_USER_1 -> ACK + STATUSTEXT, PX4 not involved); Take-off / Land via
+the Jetson skip the GCS-side checks (DDS, GPS, lock, flight state). The Jetson still applies its own
+safety checks.
 
-Dieu kien chan (blockers):
-  * link song; lenh bay qua Jetson can PX4 qua DDS;
-  * ngoai troi: Take-off / Send WP qua Jetson can GPS 3D fix; RTL luon can GPS; Land / Hold khong xet GPS;
-  * EXTENDED_SYS_STATE: chan Take-off khi dang bay, Land / Hold / RTL khi o mat dat; chua biet -> khong chan.
+Blockers:
+  * link alive; flight commands via the Jetson need PX4 over DDS;
+  * outdoors: Take-off / Send WP via the Jetson need a 3D GPS fix; RTL always needs GPS; Land / Hold never do;
+  * EXTENDED_SYS_STATE: Take-off is blocked in the air, Land / Hold / RTL on the ground; unknown -> not blocked.
 """
 
 import math
@@ -25,10 +27,12 @@ from ground_station_ui.core.vehicle.groups import LINK_TIMEOUT_S
 
 ROUTES = ('px4', 'jetson')
 ROUTE_NAMES = {'px4': 'PX4 · 915', 'jetson': 'Jetson · 433'}
-ACTIONS = {'px4': ('takeoff', 'land'), 'jetson': ('takeoff', 'land', 'hold', 'rtl', 'upload', 'mission')}
-FLIGHT_ACTIONS = ('takeoff', 'land', 'hold', 'rtl', 'mission')
+ACTIONS = {'px4': ('takeoff', 'land'),
+           'jetson': ('takeoff', 'land', 'hold', 'rtl', 'upload', 'mission', 'continue')}
+FLIGHT_ACTIONS = ('takeoff', 'land', 'hold', 'rtl', 'mission', 'continue')
 LABELS = {'takeoff': 'Take-off', 'land': 'Land', 'hold': 'Hold', 'rtl': 'RTL', 'upload': 'Send WP',
-          'mission': 'Start mission'}
+          'mission': 'Start mission', 'continue': 'Continue'}
+OPT_AVOIDANCE = 1   # MISSION_START param3 bit 0 (project convention, see drone_telemetry)
 IN_AIR = ('IN AIR', 'TAKING OFF', 'LANDING')
 NAN = float('nan')
 AUTO_LOITER = 3     # PX4_CUSTOM_SUB_MODE_AUTO_LOITER
@@ -36,21 +40,21 @@ PENDING = ('sending', 'in_progress')
 
 
 def check_state(action, landed):
-    """'' = cho gui; nguoc lai = ly do chan. landed: StatusGroup.values['landed']."""
+    """'' = allowed; otherwise the blocking reason. landed: StatusGroup.values['landed']."""
     if action == 'takeoff' and landed in IN_AIR:
         return 'already flying'
-    if action in ('land', 'hold', 'rtl', 'mission') and landed == 'ON GROUND':
+    if action in ('land', 'hold', 'rtl', 'mission', 'continue') and landed == 'ON GROUND':
         return 'vehicle is on the ground'
     return ''
 
 
 def px4_steps(action, altitude, armed, amsl):
-    """Cac COMMAND_LONG gui thang PX4. altitude: m so voi diem cat canh; amsl: do cao AMSL hien tai
-    (None = khong co vi tri toan cuc -> NaN, PX4 dung MIS_TAKEOFF_ALT)."""
+    """COMMAND_LONGs sent directly to PX4. altitude: m above the take-off point; amsl: current AMSL
+    altitude (None without a global position -> NaN, PX4 then uses MIS_TAKEOFF_ALT)."""
     if action == 'takeoff':
         steps = [] if armed else [(mavlink.MAV_CMD_COMPONENT_ARM_DISARM, [1.0])]
         alt = amsl + altitude if amsl is not None and math.isfinite(altitude) else NAN
-        # param7 = AMSL; lat / lon / yaw = NaN -> giu vi tri / huong
+        # param7 = AMSL; lat / lon / yaw = NaN keep the current position / heading
         steps.append((mavlink.MAV_CMD_NAV_TAKEOFF, [NAN, 0, 0, NAN, NAN, NAN, alt]))
         return steps
     if action == 'land':
@@ -61,24 +65,32 @@ def px4_steps(action, altitude, armed, amsl):
     return [(mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH, [])]
 
 
-def jetson_steps(action, altitude):
-    """Lenh gui Jetson (1 lenh; Jetson tu tach thanh cac buoc cho PX4)."""
+def jetson_steps(action, altitude, options=None):
+    """Command sent to the Jetson (one command; the Jetson splits it into PX4 steps).
+    options for Start mission: {'avoidance': bool} -> bitmask in param3, {'speed': m/s} -> param4,
+    {'xy_tolerance', 'z_tolerance': m} -> param5 / param6 (0 = Jetson default)."""
     if action == 'takeoff':
         return [(mavlink.MAV_CMD_NAV_TAKEOFF, [0, 0, 0, NAN, NAN, NAN, float(altitude)])]
     if action == 'land':
         return [(mavlink.MAV_CMD_NAV_LAND, [0, 0, 0, NAN, NAN, NAN, 0])]
     if action == 'hold':
         return [(mavlink.MAV_CMD_NAV_LOITER_UNLIM, [])]
-    if action == 'mission':     # mission_manager bay waypoint da upload (tu HOVER)
-        return [(mavlink.MAV_CMD_MISSION_START, [0, 0])]
+    if action == 'mission':     # mission_manager flies the uploaded waypoints (from HOVER)
+        options = options or {}
+        bits = OPT_AVOIDANCE if options.get('avoidance') else 0
+        return [(mavlink.MAV_CMD_MISSION_START, [0, 0, bits, float(options.get('speed') or 0.0),
+                                                 float(options.get('xy_tolerance') or 0.0),
+                                                 float(options.get('z_tolerance') or 0.0)])]
+    if action == 'continue':    # after a manual task or a pause
+        return [(mavlink.MAV_CMD_DO_PAUSE_CONTINUE, [1])]
     return [(mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH, [])]
 
 
 class CommandLock:
-    """Duong nao dang giu quyen lenh bay. Nha quyen khi:
-      * drone da bay (armed / trong khong) roi ve dat + disarm, hoac
-      * lenh cua duong do khong thanh (bi tu choi / het han), hoac duoc chap nhan nhung drone khong
-        arm trong LINK_TIMEOUT_S (vd PX4 tu disarm)."""
+    """Tracks which route owns flight control. Ownership is released when:
+      * the drone has flown (armed / in air) and is back on the ground and disarmed, or
+      * the route's command failed (rejected / timed out), or was accepted but the drone did not arm
+        within LINK_TIMEOUT_S (e.g. PX4 auto-disarmed)."""
 
     def __init__(self):
         self.owner = None
@@ -96,7 +108,7 @@ class CommandLock:
         if armed or landed in IN_AIR:
             self._flew, self._idle_since = True, None
             return
-        if self._flew:                              # bay xong: ve dat + disarm
+        if self._flew:                              # flight over: landed and disarmed
             self.owner = None
             return
         if owner_state in PENDING:
@@ -106,12 +118,12 @@ class CommandLock:
             self.owner = None
             return
         self._idle_since = self._idle_since if self._idle_since is not None else now
-        if now - self._idle_since > LINK_TIMEOUT_S:  # accepted nhung khong arm
+        if now - self._idle_since > LINK_TIMEOUT_S:  # accepted but never armed
             self.owner = None
 
 
 class FlightCommander:
-    """UI -> kiem tra -> CommandSender cua tung duong. Trang thai lenh hien o senders[route].values."""
+    """UI -> checks -> per-route CommandSender. Command state is exposed in senders[route].values."""
 
     def __init__(self, senders, vehicle, jetson_target, environment=lambda: 'indoor'):
         self.senders = senders                  # {'px4': CommandSender, 'jetson': CommandSender}
@@ -120,7 +132,7 @@ class FlightCommander:
         self.environment = environment          # -> 'indoor' | 'outdoor' (Settings / PX4 config)
         self.lock = CommandLock()
 
-    # --- dieu kien -------------------------------------------------------------------------
+    # --- preconditions ------------------------------------------------------------------
     def available(self):
         v = self.vehicle
         return {'px4': v.sysid is not None and v.link is not None
@@ -128,14 +140,14 @@ class FlightCommander:
                 'jetson': bool(v.groups['companion'].values['linkAlive'])}
 
     def jetson_has_px4(self):
-        """Jetson bao nhan duoc PX4 qua DDS (DRONE_COMPONENT_STATUS 'PX4 (DDS)' ok / warn)."""
+        """Jetson reports PX4 over DDS (DRONE_COMPONENT_STATUS 'PX4 (DDS)' ok / warn)."""
         for c in self.vehicle.groups['companion'].items:
             if c.get('id') == mavlink.DRONE_COMPONENT_PX4:
                 return c.get('level') in ('ok', 'warn')
         return False
 
     def blocker(self, route, action):
-        """'' = nut dung duoc; nguoc lai = ly do khoa (hien tren UI)."""
+        """'' = button enabled; otherwise the lock reason shown in the UI."""
         if not self.available()[route]:
             return 'PX4 not connected (radio 915)' if route == 'px4' else 'Jetson not connected (radio 433)'
         if action in FLIGHT_ACTIONS:
@@ -148,28 +160,32 @@ class FlightCommander:
             fix = self.vehicle.groups['gps'].values.get('fixType') or 0
             if action == 'rtl' and fix < 3:
                 return 'RTL needs GPS fix'
-            if action == 'mission' and fix < 3:        # waypoint la toa do GPS
+            if action == 'mission' and fix < 3:        # waypoints are GPS coordinates
                 return 'mission needs GPS fix'
             if action in ('takeoff', 'upload') and self.environment() == 'outdoor' and fix < 3:
                 return 'no GPS fix'
         return ''
 
     def gates(self):
-        """{route: {action: ly do khoa ('' = mo)}} cho QML."""
+        """{route: {action: lock reason ('' = enabled)}} for QML."""
         return {r: {a: self.blocker(r, a) for a in ACTIONS[r]} for r in ROUTES}
 
-    # --- thuc hien -------------------------------------------------------------------------
+    # --- execution ----------------------------------------------------------------------
     def _jetson(self):
-        """Dich Jetson tren companion_link (433 / SITL UDP)."""
+        """Jetson target on companion_link (433 / SITL UDP)."""
         self.jetson_target.link = self.vehicle.companion_link
         return self.jetson_target
 
-    def execute(self, route, action, altitude=NAN, test=False):
-        """test=True (chi duong jetson): bo qua moi dieu kien phia GCS, Jetson tu quyet."""
+    def execute(self, route, action, altitude=NAN, test=False, options=None):
+        """test=True (jetson route only): skip all GCS-side checks and let the Jetson decide."""
         if action not in FLIGHT_ACTIONS or action not in ACTIONS[route] or (test and route != 'jetson'):
             raise ValueError(f'{route}/{action}')
         sender = self.senders[route]
         label = LABELS[action] + (f' {altitude:g} m' if action == 'takeoff' and math.isfinite(altitude) else '')
+        if action == 'mission' and (options or {}).get('speed'):
+            label += f" {options['speed']:g} m/s"
+        if action == 'mission' and (options or {}).get('avoidance'):
+            label += ' + avoidance'
         status = self.vehicle.groups['status'].values
         if test:
             label += ' [TEST]'
@@ -183,12 +199,12 @@ class FlightCommander:
                                    name=ROUTE_NAMES['px4'])
             sender.send_steps(target, px4_steps(action, altitude, status['armed'], self._amsl()), label)
         else:
-            sender.send_steps(self._jetson(), jetson_steps(action, altitude), label)
+            sender.send_steps(self._jetson(), jetson_steps(action, altitude, options), label)
         self.lock.claim(route)
         return True
 
     def ping(self):
-        """Ping Jetson (ACK khong qua PX4). Ket qua o senders['jetson']."""
+        """Ping the Jetson (ACK without PX4). The result is in senders['jetson']."""
         self.senders['jetson'].send_steps(self._jetson(), [(mavlink.MAV_CMD_USER_1, [])], 'Link test')
 
     def tick(self, now):
@@ -198,7 +214,7 @@ class FlightCommander:
                          self.senders[owner].values['state'] if owner else 'idle')
 
     def _amsl(self):
-        """Do cao AMSL hien tai khi GPS >= 3D fix, nguoc lai None."""
+        """Current AMSL altitude with a 3D GPS fix or better, otherwise None."""
         g = self.vehicle.groups
         if (g['gps'].values.get('fixType') or 0) < 3:
             return None

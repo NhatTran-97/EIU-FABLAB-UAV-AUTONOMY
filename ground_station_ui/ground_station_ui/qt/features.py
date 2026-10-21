@@ -1,5 +1,5 @@
-"""Danh sach tinh nang (tab ben trai). Them tinh nang moi = them 1 dong + 1 trang QML,
-menu va StackLayout tu sinh -- khong sua Main.qml.
+"""Feature list (left tabs). Adding a feature = one entry here + one QML page; the menu and the
+StackLayout are generated, Main.qml is not edited.
 """
 
 FEATURES = [

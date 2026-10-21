@@ -1,202 +1,265 @@
 # ground_station_ui — Drone GCS
 
-App vận hành drone trong lúc bay (PySide6 + QML). Gom vào một app những gì trước đây phải mở
-QGC + GUI LoRa cùng lúc. **Nạp firmware, cấu hình, hiệu chuẩn PX4 vẫn dùng QGroundControl**
-(tắt app này trước — mỗi cổng serial chỉ một app mở được).
+In-flight operation app for the drone (PySide6 + QML). It brings together what previously required QGC and
+the LoRa GUI open side by side. **Firmware upload, PX4 configuration and calibration still use
+QGroundControl** (close this app first: each serial port can be opened by only one app).
 
-| Link | Đường truyền | Nội dung |
+| Link | Transport | Content |
 |---|---|---|
-| `px4` | radio SiK 915 MHz | MAVLink chuẩn PX4: heartbeat, mode, GPS, pin, sensor, độ cao, STATUSTEXT |
-| `jetson` | radio SiK 433 MHz (NETID 77) | `drone_telemetry`: trạng thái + tần số lidar / gimbal / camera / PX4-DDS |
-| `sitl` | UDP 14550 | PX4 SITL trên laptop — test giao diện không cần drone |
+| `px4` | SiK radio 915 MHz | Standard PX4 MAVLink: heartbeat, mode, GPS, battery, sensors, altitude, STATUSTEXT |
+| `jetson` | SiK radio 433 MHz (NETID 77) | `drone_telemetry`: status and rate of lidar / gimbal / camera / PX4-DDS, pose, commands |
+| `sitl` | UDP 14550 | PX4 SITL on the laptop, for testing the UI without a drone |
 
-Thêm / bớt link, lớp bản đồ: [config/gcs.yaml](config/gcs.yaml), không sửa code.
+Links and map layers are configured in [config/gcs.yaml](config/gcs.yaml); no code changes needed.
 
-## Bản đồ offline + waypoint
+## Offline map and waypoints
 
-Cách giống QGC: bản đồ online + **cache tải sẵn**. QtLocation lấy ô bản đồ từ tile server cục bộ
-trong app; tile server trả ô từ file `.mbtiles` (SQLite) trong `data/maps/` trong package,
-ô chưa có thì tải từ nguồn online (nếu có mạng) rồi lưu lại. Mất mạng → chỉ dùng cache.
+Same approach as QGC: an online map plus a **prefetched cache**. QtLocation loads tiles from a local tile
+server inside the app; the tile server serves tiles from `.mbtiles` files (SQLite) in the package's
+`data/maps/`, and downloads missing tiles from the online source (when online) and stores them. Offline,
+only the cache is used.
 
-- **Lớp** (chọn ở tab **Cài đặt**, được ghi nhớ): *Hybrid* (mặc định: ảnh Google — cùng nguồn QGC, nét nhất ở khu bay — + nhãn Esri),
-  *Azure* (ảnh Maxar/Bing, cần key, xem dưới). Nút ⚑: ẩn/hiện danh sách waypoint.
-  Lớp ghép (Hybrid = ảnh Google + nhãn đường/địa danh Esri; Azure) do tile server ghép từ nhiều nguồn, mỗi nguồn cache riêng.
-- **Azure Maps**: key trong `config/keys.yaml` (`AZURE_MAPS_KEY: "..."`, đã .gitignore) hoặc biến môi trường `AZURE_MAPS_KEY`.
-  Không có key → lớp chỉ đọc cache; cache cũng trống → lớp bị ẩn.
-- **Zoom sâu hơn 19**: QtLocation tự phóng to ô z19 — chi tiết bị giới hạn bởi ảnh gốc của nguồn.
-- **Trước khi ra hiện trường** (còn mạng): tab Map → kéo tới vùng bay → nút ⬇ → chọn zoom → *Tải về*.
-  Làm cho từng lớp (Hybrid tự tải cả 3 nguồn). Vùng 2×2 km zoom tới 19 ≈ vài chục MB / lớp.
-- **Ảnh drone tự chụp** (nét nhất, hợp lệ): WebODM → `orthophoto.tif` → `gdal2tiles.py --xyz`
-  / `rio mbtiles` → thêm lớp `file: ortho.mbtiles` (không có `url`) trong `gcs.yaml`.
-- **Tìm vị trí**: ô góc trên trái, nhập `11.052919, 106.666057` (copy từ Google Maps được) → Enter:
-  bản đồ bay tới + ghim đỏ; *＋ Waypoint* để thêm luôn điểm đó. App nhớ vùng xem cuối cùng.
-- **Môi trường bay** (tab Cài đặt: Tự động / Trong nhà / Ngoài trời). *Tự động* = theo bộ tham số PX4
-  đang nạp (`EKF2_GPS_CTRL = 0` hoặc `EKF2_HGT_REF = 2` → trong nhà; GPS bật + độ cao baro/GPS → ngoài trời);
-  chưa đọc được tham số thì tạm theo GPS fix. Quyết định nguồn độ cao
-  (trong nhà = cảm biến khoảng cách qua EKF, ngoài trời = so với Home), độ cao cất cánh mặc định,
-  màu cảnh báo GPS; app đọc `EKF2_GPS_CTRL` / `EKF2_HGT_REF` từ PX4 và **cảnh báo nếu PX4 đang nạp
-  bộ tham số không khớp** (vd ra ngoài trời mà quên nạp `outdoor.params`).
-- **Đồng hồ** (góc trên phải): tư thế (roll / pitch), la bàn, độ cao, tốc độ lên/xuống và ngang — từ `ATTITUDE`, `VFR_HUD`, `LOCAL_POSITION_NED` của PX4.
-- **Waypoint**: *＋ Thêm điểm* rồi bấm lên bản đồ; kéo điểm để di chuyển; chuột phải để xóa;
-  sửa độ cao trong danh sách bên phải.
-- **Vùng cấm / hạn chế bay** (nút ⛔: bật/tắt, nhấn giữ = nạp lại file): chép `.geojson` hoặc
-  OpenAir (`.txt`) vào `data/airspace/`. Tô màu giống cambay.mod.gov.vn: đỏ (cấm), cam (hạn chế),
-  vàng (nguy hiểm), xanh (CTR sân bay); tick trong chú thích để ẩn/hiện từng loại; waypoint / ghim nằm trong vùng hiện ⚠. GeoJSON:
-  Polygon / MultiPolygon, hoặc Point + `radius_m`; `properties: name, kind, lower, upper`.
-  Nguồn chính thức của Bộ Quốc phòng: tra cứu trên http://cambay.mod.gov.vn (chưa có API công khai)
-  → vẽ lại vùng quanh khu bay bằng geojson.io. App chỉ **cảnh báo**, không thay giấy phép bay.
-- Điều khoản: Esri / Google / Bing hạn chế tải hàng loạt — tự cân nhắc nguồn trong `gcs.yaml`.
+- **Layers** (chosen on the **Settings** tab, remembered): *Hybrid* (default: Google imagery, the same source
+  as QGC and the sharpest at the flying field, plus Esri labels) and *Azure* (Maxar/Bing imagery, needs a
+  key, see below). The ⚑ button shows / hides the waypoint list. Composite layers (Hybrid = Google imagery +
+  Esri road/place labels; Azure) are merged by the tile server from several sources, each with its own cache.
+- **Azure Maps**: key in `config/keys.yaml` (`AZURE_MAPS_KEY: "..."`, git-ignored) or the `AZURE_MAPS_KEY`
+  environment variable. Without a key the layer is cache-only; with an empty cache it is hidden.
+- **Zoom beyond 19**: QtLocation upscales z19 tiles; detail is limited by the source imagery.
+- **Before going to the field** (while online): Map tab → pan to the flying area → ⬇ button → choose zoom →
+  *Download*. Do it for each layer (Hybrid downloads all three sources). A 2×2 km area up to zoom 19 is a
+  few tens of MB per layer.
+- **Own drone orthophoto** (sharpest, and licence-free): WebODM → `orthophoto.tif` → `gdal2tiles.py --xyz`
+  / `rio mbtiles` → add a layer with `file: ortho.mbtiles` (no `url`) in `gcs.yaml`.
+- **Go to a position**: type `11.052919, 106.666057` (copied from Google Maps works) in the top-left box →
+  Enter: the map flies there and drops a red pin; *＋ Waypoint* adds that point. The last viewed area is
+  remembered.
+- **Map view**: right-drag rotates (horizontal) and tilts (vertical) the map; ⟲N resets it. On a tilted map
+  the drone is drawn as the 3D model, raised above its ground shadow by its altitude. The marker scales
+  with the map (real size × exaggeration, clamped to a minimum on-screen size).
+- **Flown path** (orange): recorded while flying, one segment per flight, drawn on the map and saved as GPX to
+  `data/tracks/` when the flight ends. Positions come from PX4 (915 / SITL) or, without that link, from the
+  Jetson; without the PX4 heartbeat, "flying" means more than 0.5 m above Home. The legend at the bottom left has
+  a *Flown path* checkbox (remembered), the length flown, ● REC while recording and *Clear*; the 〰 button does
+  the same. The planned path (Home → waypoints) is drawn in violet.
+- **Flight environment** (Settings tab: Auto / Indoor / Outdoor). *Auto* follows the loaded PX4 parameter
+  set (`EKF2_GPS_CTRL = 0` or `EKF2_HGT_REF = 2` → indoor; GPS on + baro/GPS height → outdoor), or the GPS
+  fix until the parameters are read. It selects the altitude source (indoor = rangefinder via the EKF,
+  outdoor = above Home), the default take-off altitude and the GPS warning colour. The app reads
+  `EKF2_GPS_CTRL` / `EKF2_HGT_REF` from PX4 and **warns if the loaded parameter set does not match**
+  (e.g. flying outdoors without loading `outdoor.params`).
+- **Instruments** (top right): attitude (roll / pitch), compass, altitude, vertical and ground speed, from
+  PX4 `ATTITUDE`, `VFR_HUD` and `LOCAL_POSITION_NED`. Without the PX4 link, attitude and heading fall back
+  to the Jetson data.
+- **Waypoints**: *＋ Add point*, then click on the map; drag a point to move it; right-click to delete;
+  edit altitudes in the list on the right.
+- **Tasks at waypoints**: each waypoint in the list has a *Task*: *Fly through* (default), *Pick (auto hook)* or
+  *Pick (manual hook)*, with the search and hook heights above ground. A pick makes the drone descend, find the
+  ArUco marker, align over it, hook the load (automatically, or the pilot does it and then presses Continue) and
+  climb back. Waypoints with a task show an **A** or **M** badge on the map. Details:
+  `offboard_control/docs/MISSION_PIPELINE.md`.
+- **Prohibited / restricted airspace** (⛔ button: show / hide, long-press = reload files): copy `.geojson`
+  or OpenAir (`.txt`) files into `data/airspace/`. Colours follow cambay.mod.gov.vn: red (prohibited),
+  orange (restricted), yellow (danger), blue (airport CTR); checkboxes in the legend show / hide each kind;
+  waypoints / pins inside a zone show ⚠. GeoJSON: Polygon / MultiPolygon, or Point + `radius_m`;
+  `properties: name, kind, lower, upper`. The official Ministry of Defence source is
+  http://cambay.mod.gov.vn (no public API) → redraw the zones around the flying area with geojson.io. The
+  app only **warns**; it does not replace a flight permit.
+- Terms of use: Esri / Google / Bing restrict bulk downloading — choose the sources in `gcs.yaml` accordingly.
 
-## Trang 3D (thay RViz)
+## 3D page (replaces RViz)
 
-Lưới sàn, trục `map` (gốc EKF của PX4), drone + trục `base_link`, vệt bay; chuột trái xoay, cuộn
-zoom, chuột phải kéo; *Bám drone* / *Xóa vệt*. Nguồn: Jetson subscribe `/fmu/out/vehicle_odometry`
-(PX4 qua uXRCE-DDS) → `DRONE_LOCAL_POSE` (id 45001, ~57 B, 5 Hz ≈ 300 B/s) → radio 433 → app.
+Ground grid, `map` axes (PX4 EKF origin), the drone model with its `base_link` axes, the flight trail (blue)
+and the planned path of the last Send WP (violet, with a sphere and a drop line per waypoint, green for pick
+tasks; *Planned path* checkbox). The grid grows with the area flown and the planned path (40, 60, 100, 150 m…).
+The planned path is placed by anchoring the GPS waypoints on the drone's current GPS position and local pose,
+since the EKF origin itself is not received; it needs a GPS position and the 3D pose.
+left drag rotates, wheel zooms, right drag pans; *Follow drone* / *Clear trail*. Source: the Jetson
+subscribes to `/fmu/out/vehicle_odometry` (PX4 over uXRCE-DDS) → `DRONE_LOCAL_POSE` (id 45001, ~57 B, 5 Hz
+≈ 300 B/s) → radio 433 → app. Without the Jetson, PX4 `LOCAL_POSITION_NED` over the 915 link (or SITL) is
+used instead.
 
-Quy ước: truyền **NED** (giữ nguyên PX4); app đổi **một lần** sang **ENU / FLU** như ROS
-(`core/geometry/frames.py`, giống `px4_ros_com`) để lidar, ArUco, TF từ Jetson dùng thẳng.
-Qt Quick 3D là Y-lên: scene = (E, U, −N) × 100 (1 m = 100), chỉ ở `qt/geometry3d.py` và
+Conventions: data is transmitted in **NED** (PX4 as is); the app converts **once** to **ENU / FLU** like ROS
+(`core/geometry/frames.py`, same as `px4_ros_com`) so lidar, ArUco and TF data from the Jetson can be used
+directly. Qt Quick 3D is Y-up: scene = (E, U, −N) × 100 (1 m = 100 units), only in `qt/geometry3d.py` and
 `View3DPage.qml`.
 
-Sau này: marker ArUco (`Axes3D`).
+The drone model is built in Blender from parameters and real part models: see
+[tools/drone_model/README.md](tools/drone_model/README.md).
 
-## Nhận diện EIU
+Planned: ArUco markers (`Axes3D`).
 
-`images/logo.png` (logo gốc) · `images/logo_dark.png` (bản nền tối: phần navy → trắng, vạch vàng giữ
-nguyên — sinh từ logo gốc) · `images/eiu.png` (ảnh campus). Logo nhỏ ở đầu menu; splash ~7 s lúc mở
-app (ảnh campus + logo, bấm để bỏ qua, `holdMs` trong `qml/components/Splash.qml`); Settings → About.
-Không đặt ảnh / logo lớn trong các trang vận hành (Map, 3D, Telemetry, Diagnostics).
+## EIU branding
 
-**Icon ứng dụng:** `images/icons/drone-gcs-*.png` (sinh từ `images/logo_desktop.png`, nền ngoài khung
-→ trong suốt). Cửa sổ dùng icon này; lối tắt trong menu ứng dụng / dock:
-`scripts/install_desktop.sh` (chạy trong `drone_env`; gỡ: `--uninstall`).
+`images/logo.png` (original logo) · `images/logo_dark.png` (dark-background version: navy → white, yellow
+stripes kept, generated from the original) · `images/eiu.png` (campus photo). Small logo at the top of the
+menu; ~7 s splash at startup (campus photo + logo, click to skip, `holdMs` in
+`qml/components/Splash.qml`); Settings → About. No large images or logos on the operational pages (Map, 3D,
+Telemetry, Diagnostics).
 
-## Cảnh báo & an toàn
+**App icon:** `images/icons/drone-gcs-*.png` (generated from `images/logo_desktop.png`, background outside
+the frame made transparent). The window uses this icon; for an application-menu / dock launcher run
+`scripts/install_desktop.sh` (inside `drone_env`; remove with `--uninstall`).
 
-- **Thanh trên cùng:** chế độ bay chữ to + huy hiệu **ARMED** (đỏ) / DISARMED; pin có biểu tượng
-  ⚠ (≤ 25 %) / ⛔ (≤ 15 %), không chỉ đổi màu.
-- **Alert Center** (nút ⚠ n góc phải): danh sách vấn đề hiện tại — cùng nguồn với **System Health**
-  đầu tab Diagnostics và **Pre-flight check** trong hộp xác nhận Take-off (có lỗi nghiêm trọng →
-  khóa nút cất cánh). Quy tắc: `core/alerts/health.py`.
-- **Giọng nói** (tiếng Anh, tắt / bật ở Settings): đổi chế độ, arm / disarm, mất kết nối, pin 30/20/15/10 %.
+## Alerts and safety
 
-## Take-off / Land / Gửi waypoint
+- **Top bar:** large flight mode text + **ARMED** (red) / DISARMED badge; the battery shows ⚠ (≤ 25 %) /
+  ⛔ (≤ 15 %) icons, not just a colour change.
+- **Alert Center** (⚠ n button on the right): current problem list, from the same source as **System
+  Health** at the top of the Diagnostics tab and the **pre-flight check** in the Take-off confirm dialog (a
+  critical problem locks the take-off button). Rules: `core/alerts/health.py`.
+- **Voice** (English, enabled / disabled in Settings): mode changes, arm / disarm, link loss, battery
+  30/20/15/10 %.
 
-**Lệnh bay có 2 đường:** bấm **ô PX4** trên thanh trên cùng → Take-off / Land **thẳng PX4 qua radio 915**
-(ARM → `NAV_TAKEOFF`, `NAV_LAND` — ACK từ PX4); **3 nút dưới Map** → **qua Jetson (433)** như bảng dưới.
-**Khóa chéo:** đường nào đã cất cánh / hạ cánh thì giữ quyền đến khi về đất + disarm, đường kia bị khóa.
-Nút Jetson còn khóa khi mất Jetson, Jetson không có dữ liệu PX4 (DDS), hoặc ngoài trời chưa có GPS fix.
-Chi tiết: [docs/flight_commands.md](docs/flight_commands.md).
+## Take-off / Land / Send waypoints
 
-Chi tiết cách hoạt động, luật an toàn, giao thức ACK, cách thử: [docs/flight_commands.md](docs/flight_commands.md).
+**Flight commands have two routes:** click the **PX4 box** in the top bar → Take-off / Land **directly to
+PX4 over radio 915** (ARM → `NAV_TAKEOFF`, `NAV_LAND`, ACK from PX4); the **buttons under the Map** go **via
+the Jetson (433)** as in the table below. **Cross-route lock:** the route that took off / landed owns control
+until the drone has landed and disarmed; the other route is locked. Jetson buttons are also locked when the
+Jetson is lost, the Jetson has no PX4 data (DDS), or there is no GPS fix outdoors.
 
-Thanh nút giữa dưới tab Map (đường Jetson), khóa theo điều kiện trên — lý do hiện ngay dưới nút. Take-off / Land phải
-**giữ 1 giây** để xác nhận; gửi waypoint cảnh báo nếu có điểm nằm trong vùng cấm / hạn chế.
+How it works, safety rules, the ACK protocol and how to test: [docs/flight_commands.md](docs/flight_commands.md).
 
-| Nút | Đường Jetson: MAVLink gửi tới sysid 1 / compid 191 (link `jetson`) | Jetson trả về |
+The button bar at the bottom centre of the Map tab (Jetson route) is locked by the conditions above, with
+the reason shown under the buttons. Take-off / Land must be **held for 1 second** to confirm; Send WP warns
+if a point lies inside a prohibited / restricted zone.
+
+| Button | Jetson route: MAVLink to sysid 1 / compid 191 (link `jetson`) | Jetson reply |
 |---|---|---|
-| Take-off | `COMMAND_LONG` `MAV_CMD_NAV_TAKEOFF` (22), `param7` = độ cao m | `COMMAND_ACK` |
+| Take-off | `COMMAND_LONG` `MAV_CMD_NAV_TAKEOFF` (22), `param7` = altitude in m | `COMMAND_ACK` |
 | Land | `COMMAND_LONG` `MAV_CMD_NAV_LAND` (21) | `COMMAND_ACK` |
 | Hold | `COMMAND_LONG` `MAV_CMD_NAV_LOITER_UNLIM` (17) → Jetson: `DO_SET_MODE` AUTO.LOITER | `COMMAND_ACK` |
-| RTL | `COMMAND_LONG` `MAV_CMD_NAV_RETURN_TO_LAUNCH` (20) — chỉ khi ngoài trời (cần GPS) | `COMMAND_ACK` |
-| Gửi WP | `MISSION_COUNT` → (Jetson xin) `MISSION_REQUEST_INT` → `MISSION_ITEM_INT` (`GLOBAL_RELATIVE_ALT_INT`, `NAV_WAYPOINT`) | `MISSION_ACK` |
+| RTL | `COMMAND_LONG` `MAV_CMD_NAV_RETURN_TO_LAUNCH` (20), outdoors only (needs GPS) | `COMMAND_ACK` |
+| Send WP | `MISSION_COUNT` → (Jetson requests) `MISSION_REQUEST_INT` → `MISSION_ITEM_INT` (`GLOBAL_RELATIVE_ALT_INT`, `NAV_WAYPOINT`) | `MISSION_ACK` |
+| Start mission | `COMMAND_LONG` `MAV_CMD_MISSION_START` (300), `param3` bit 0 = obstacle avoidance, `param4` = mission speed (m/s), `param5` / `param6` = arrival tolerance xy / z (m) | `COMMAND_ACK` |
+| Continue | `COMMAND_LONG` `MAV_CMD_DO_PAUSE_CONTINUE` (193), `param1 = 1` | `COMMAND_ACK` |
+| Live settings | `COMMAND_LONG` `MAV_CMD_USER_2` (31011), `param1` = speed, `param2` / `param3` = tolerance xy / z; sent 0.6 s after the last change of speed or tolerance while a mission is active or paused, through its own sender | `COMMAND_ACK` |
 
-Không có phản hồi → gửi lại (`commands.ack_timeout_s`, `retries` trong `gcs.yaml`), hết lượt → báo
-"Jetson not responding". Phía Jetson: `drone_telemetry/commands.py` chuyển lệnh thành PX4
-`/fmu/in/vehicle_command` (Take-off = ARM rồi NAV_TAKEOFF, PX4 lên độ cao rồi tự Hold), chờ
-`vehicle_command_ack`, trả `COMMAND_ACK` (IN_PROGRESS giữ chỗ, rồi kết quả) + `STATUSTEXT` lý do.
-Luật an toàn ở Jetson: Take-off chỉ khi ở mặt đất; Land / Hold / RTL chỉ khi đang bay; không có dữ
-liệu PX4 → từ chối. Waypoint: Jetson **chỉ lưu** (publish `/gcs/mission`, JSON) — chưa bay theo.
-Thanh nút đổi theo trạng thái: mặt đất → Take-off / Send WP; đang bay → Send WP / Hold / RTL / Land.
+Without a reply the command is resent (`commands.ack_timeout_s`, `retries` in `gcs.yaml`); after the last
+retry the app reports "Jetson not responding". On the Jetson, `drone_telemetry/commands.py` forwards
+Take-off / Land to `mission_manager`, which flies them in OFFBOARD through `offboard_control`; Hold / RTL go
+to PX4 as `/fmu/in/vehicle_command`. The Jetson replies with `COMMAND_ACK` (IN_PROGRESS while waiting, then
+the result) and a `STATUSTEXT` with the reason. Jetson safety rules: Take-off only on the ground; Land /
+Hold / RTL only in the air; no PX4 data → rejected. Waypoints are stored on the Jetson (`/gcs/mission`,
+JSON) and flown by `mission_manager` on *Start mission*, from HOVER.
+The button bar follows the flight state: on the ground → Take-off / Send WP; in the air → Send WP / Start
+mission / Hold / RTL / Land.
 
-## Dữ liệu nằm trong package
+**Mission speed:** set in the waypoint list (*Mission speed*, 0.5–10 m/s, default `mission.default_speed` in
+`gcs.yaml`). It is sent with Start mission and applies to every leg of the mission; the Jetson limits it to its
+`max_cruise_speed` (5 m/s), and PX4 `MPC_XY_VEL_MAX` remains the hard limit.
 
-`data/maps/*.mbtiles` (cache bản đồ offline), `data/airspace/` (vùng cấm bay), `config/keys.yaml`
-(API key). Chép cả thư mục `ground_station_ui` sang máy khác là chạy được với bản đồ đã tải.
-`*.mbtiles` và `keys.yaml` nằm trong `.gitignore` (nặng / bí mật) — gửi qua git thì không đi kèm.
+**Arrival tolerance:** also in the waypoint list (*XY* / *Z*, default `mission.xy_tolerance` 0.75 m and
+`mission.z_tolerance` 0.5 m in `gcs.yaml`): the distance at which a waypoint counts as reached. Sent with Start
+mission for the whole mission; the Jetson accepts 0.2–5 m (XY) and 0.1–3 m (Z).
 
-## Chạy
+**Start mission options:** the confirm dialog shows the speed and tolerances, how many pick tasks the mission contains, and has an
+*Obstacle avoidance* checkbox. The Jetson refuses the mission with a reason if an option or a task needs a node
+that is not running (avoidance, ArUco localizer, payload) or that is disabled on the drone.
+
+**Mission banner and Continue:** while a mission runs, a banner above the buttons shows the current waypoint
+(`MISSION_CURRENT` from the Jetson). When the mission waits for the operator, the banner turns orange, shows the
+Jetson's message and a **▶ Continue** button:
+
+- *manual pick*: the drone holds over the marker and asks the pilot to take control; after hooking, the pilot
+  flips the RC switch back to Offboard, or the operator presses Continue;
+- *pilot override*: the pilot moved the sticks during the mission; Continue (or the RC switch to Offboard)
+  resumes from where the drone is.
+
+## Data inside the package
+
+`data/maps/*.mbtiles` (offline map cache), `data/airspace/` (airspace), `data/tracks/` (GPX flight tracks),
+`config/keys.yaml` (API keys). Copying the whole `ground_station_ui` directory to another machine is enough
+to run it with the downloaded maps. `*.mbtiles`, `data/tracks/` and `keys.yaml` are git-ignored (large /
+private), so they are not included when shared through git.
+
+## Running
 
 ```bash
-pip install -r requirements.txt     # PySide6, pyserial, pyyaml, Pillow (PySide6 không có trong rosdep)
+pip install -r requirements.txt     # PySide6, pyserial, pyyaml, Pillow (PySide6 is not in rosdep)
 
-# Build như package ROS 2
+# Build as a ROS 2 package
 cd ~/drone_ws && colcon build --packages-select ground_station_ui
 source install/setup.bash
 ros2 run ground_station_ui gcs
 
-# Hoặc chạy thẳng từ source (sửa QML/Python xong chạy lại ngay)
+# Or run directly from source (edit QML/Python and rerun immediately)
 python3 ~/drone_ws/src/ground_station_ui/ground_station_ui/main.py
 ```
 
-Lần đầu: tab **Links** → chọn cổng → Connect. Cổng được ghi nhớ, tự kết nối lại lần sau.
-Thoát: đóng cửa sổ hoặc `Ctrl+C` trong terminal.
+First run: **Links** tab → choose the port → Connect. The port is remembered and reconnected next time.
+Quit: close the window or press `Ctrl+C` in the terminal.
 
-Test với SITL: `cd ~/px4/PX4-Autopilot && make px4_sitl gz_x500` → tab Links → `PX4 SITL` → Connect.
+Testing with SITL: `cd ~/px4/PX4-Autopilot && make px4_sitl gz_x500` → Links tab → `PX4 SITL` → Connect.
 
-## Kiến trúc
+## Architecture
 
 ```
-┌─ QML ── mỗi tính năng 1 trang (qml/pages), menu sinh từ qt/features.py ─────────────┐
-├─ qt/ ── adapter: FactGroup -> QML (values / items), cập nhật tối đa ui_rate_hz ─────┤
-├─ core/ (Python thuần, test bằng pytest, không Qt) ──────────────────────────────────┤
-│  vehicle/  Vehicle = các FactGroup: status, gps, home, battery, sensors, flight,     │
-│            messages, companion. Mỗi group tự đăng ký message nó cần.                 │
-│  mission/  Mission: danh sách waypoint đang soạn                                    │
-│  maps/     MBTiles cache, TileServer (localhost), Prefetcher (tải sẵn vùng)          │
-│  router.py MessageRouter: subscribe('GPS_RAW_INT', handler) — không có if/elif dài   │
-│  links/    Link (lớp chung) -> SerialLink, UdpLink; LinkManager tạo từ gcs.yaml      │
+┌─ QML ── one page per feature (qml/pages), menu generated from qt/features.py ───────┐
+├─ qt/ ── adapters: FactGroup -> QML (values / items), updated at most at ui_rate_hz ──┤
+├─ core/ (pure Python, tested with pytest, no Qt) ─────────────────────────────────────┤
+│  vehicle/  Vehicle = FactGroups: status, gps, home, battery, sensors, flight,          │
+│            attitude, localPose, track, messages, companion. Each subscribes itself.    │
+│  mission/  Mission: waypoint list being edited; uploader (MAVLink mission protocol)   │
+│  maps/     MBTiles cache, TileServer (localhost), Prefetcher (area download)           │
+│  router.py MessageRouter: subscribe('GPS_RAW_INT', handler) — no long if/elif chains   │
+│  links/    Link (base class) -> SerialLink, UdpLink; LinkManager built from gcs.yaml   │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Luồng dữ liệu:** thread của mỗi link đọc + parse → gửi **cả lô** message về main thread →
-`MessageRouter.dispatch` → các FactGroup cập nhật `values` / `items` và bật cờ `dirty` →
-`UiTicker` (5 Hz) gọi `tick()` (tuổi heartbeat, STALE...) rồi `flush()` adapter → QML vẽ lại.
-Toàn bộ domain chạy trên main thread nên không cần khóa; thread chỉ có ở tầng link.
+**Data flow:** each link thread reads and parses → sends **batches** of messages to the main thread →
+`MessageRouter.dispatch` → FactGroups update `values` / `items` and set `dirty` → `UiTicker` (5 Hz) calls
+`tick()` (heartbeat age, STALE...) and then the adapters' `flush()` → QML repaints. The whole domain runs on
+the main thread, so no locks are needed; threads exist only in the link layer. Flight paths (map track, 3D
+trail) are passed to QML incrementally (`PathLog` / `PathAdapter`), so the UI cost does not grow with
+flight time.
 
-**Mở rộng:**
+**Extending:**
 
-| Muốn thêm | Làm |
+| To add | Do |
 |---|---|
-| Link mới (serial / UDP) | thêm vào `config/gcs.yaml` |
-| Loại link mới (TCP, replay .tlog...) | lớp con của `core/links/base.py:Link` (4 hàm I/O) + đăng ký trong `LINK_TYPES` |
-| Dữ liệu mới từ PX4 | 1 `FactGroup` trong `core/vehicle/groups.py`, thêm vào `Vehicle.groups` + 1 property trong `qt/adapters.py:VehicleAdapter` |
-| Tính năng / trang mới | 1 dòng trong `qt/features.py` + 1 file `qml/pages/*.qml` |
-| Nhiều drone | **chưa hỗ trợ** — cần VehicleRegistry / định tuyến theo (link, sysid); hiện 1 `Vehicle` với danh tính rõ ràng (xem dưới) |
+| A new link (serial / UDP) | add it to `config/gcs.yaml` |
+| A new link type (TCP, .tlog replay...) | subclass `core/links/base.py:Link` (4 I/O methods) + register it in `LINK_TYPES` |
+| New PX4 data | one `FactGroup` in `core/vehicle/groups.py`, added to `Vehicle.groups`, plus a property in `qt/adapters.py:VehicleAdapter` |
+| A new feature / page | one entry in `qt/features.py` + one `qml/pages/*.qml` file |
+| Several drones | **not supported** — needs a VehicleRegistry / routing by (link, sysid); currently one `Vehicle` with explicit identity (see below) |
 
-**Danh tính nguồn dữ liệu** (`core/vehicle/vehicle.py`, mục `vehicle:` trong `gcs.yaml`): autopilot chỉ
-nhận từ `autopilot_links` (thứ tự = ưu tiên — radio thật trước SITL; link hiện tại im lặng > 5 s mới
-chuyển); message PX4 lọc theo (link, sysid, compid); dữ liệu Jetson (`DRONE_*`) chỉ nhận từ
-`companion_link` + compid 191 + cùng sysid. Nguồn đang dùng hiện ở thẻ Flight Controller (Diagnostics).
-`gcs.yaml` được kiểm tra lúc khởi động (`core/config.py`) — sai thì báo lỗi cụ thể và không chạy.
+**Data source identity** (`core/vehicle/vehicle.py`, `vehicle:` section of `gcs.yaml`): the autopilot is
+accepted only on `autopilot_links` (order = priority — real radio before SITL; switches only after the
+current link is silent for > 5 s); PX4 messages are filtered by (link, sysid, compid); Jetson data
+(`DRONE_*`) only from `companion_link` with compid 191 and the same sysid. The active source is shown on the
+Flight Controller card (Diagnostics). `gcs.yaml` is validated at startup (`core/config.py`); errors are
+reported precisely and the app does not start.
 
-**Hiệu năng:** parse trên thread link, chuyển message theo lô; UI chỉ cập nhật khi có thay đổi
-và tối đa `ui_rate_hz`; Repeater trong QML dùng **số lượng** làm model để không tạo lại delegate
-mỗi lần cập nhật (giữ nguyên lựa chọn trong ComboBox, ít tốn CPU).
+**Performance:** parsing happens on the link threads and messages are handed over in batches; the UI
+updates only on change and at most at `ui_rate_hz`; QML Repeaters use a **count** as the model so delegates
+are not recreated on every update (ComboBox selections are kept, less CPU).
 
-## Dialect MAVLink
+## MAVLink dialect
 
-`ground_station_ui/core/mavlink/drone_dialect.py` là bản copy của
-`drone_telemetry/drone_telemetry/drone_dialect.py` (sinh từ `drone_telemetry/mavlink/drone_telemetry.xml`).
-Sửa XML → chạy `scripts/gen_dialect.sh` bên `drone_telemetry` → copy file `.py` sang đây.
-Hai đầu phải dùng **cùng** một file.
+`ground_station_ui/core/mavlink/drone_dialect.py` is a copy of
+`drone_telemetry/drone_telemetry/drone_dialect.py` (generated from `drone_telemetry/mavlink/drone_telemetry.xml`).
+Edit the XML → run `scripts/gen_dialect.sh` in `drone_telemetry` → copy the `.py` file here. Both ends must
+use **the same** file.
 
-## An toàn
+## Safety
 
-Mỗi link gửi HEARTBEAT của GCS trên thread riêng. Nếu app tắt/treo khi đang bay, PX4 mất
-heartbeat GCS và xử lý theo tham số `NAV_DLL_ACT` — kiểm tra tham số này bằng QGC trước khi bay.
+Each link sends the GCS HEARTBEAT on its own thread. If the app is closed or hangs in flight, PX4 loses the
+GCS heartbeat and reacts according to `NAV_DLL_ACT` — check this parameter in QGC before flying.
 
-## Test
+## Tests
 
 ```bash
 cd ~/drone_ws/src/ground_station_ui && python3 -m pytest test/
-# hoặc qua ROS: colcon test --packages-select ground_station_ui (chạy toàn bộ test/)
+# or through ROS: colcon test --packages-select ground_station_ui (runs all of test/)
 ```
 
-## Lộ trình
+## Roadmap
 
-1. ✅ Links, thanh trạng thái, Diagnostics, thông số bay; kiến trúc tầng
-2. ✅ Map offline (cache MBTiles, tải sẵn vùng), vị trí drone, Home, soạn waypoint trên map
-3. ✅ Take-off / Land / Gửi waypoint xuống Jetson (ACK + gửi lại) — ⏳ Jetson xử lý lệnh; RTL
-4. HUD, video RTSP
-5. Ghi / phát lại `.tlog` (link replay) để debug không cần drone
+1. ✅ Links, status bar, Diagnostics, flight values; layered architecture
+2. ✅ Offline map (MBTiles cache, area prefetch), drone position, Home, waypoint editing on the map
+3. ✅ Take-off / Land / Send waypoints to the Jetson (ACK + retries); missions flown by `mission_manager`
+4. ✅ 3D page with the real drone model; map track with GPX export
+5. HUD, RTSP video
+6. `.tlog` recording / replay (replay link) for debugging without a drone

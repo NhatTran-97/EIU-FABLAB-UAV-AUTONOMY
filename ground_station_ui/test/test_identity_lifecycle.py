@@ -1,5 +1,5 @@
-"""Kich ban tu review: 2 autopilot / SITL + drone that, du lieu Jetson tu sai nguon,
-tat app khi dang tai ban do, tai trung o, cau hinh sai."""
+"""Review scenarios: two autopilots / SITL + real drone, Jetson data from the wrong source,
+closing the app while maps download, duplicate tile downloads, bad configuration."""
 
 import threading
 import time
@@ -33,19 +33,19 @@ def test_real_radio_preferred_over_sitl_and_stale_reidentify(monkeypatch):
     now = [100.0]
     monkeypatch.setattr('ground_station_ui.core.vehicle.vehicle.time.monotonic', lambda: now[0])
     r, v = make()
-    r.dispatch('sitl', [hb(SITL, 7 << 16)])                       # SITL len truoc (Stabilized)
+    r.dispatch('sitl', [hb(SITL, 7 << 16)])                       # SITL comes up first (Stabilized)
     assert v.link == 'sitl'
     changed = []
     v.on_identity_change.append(lambda: changed.append(v.link))
-    r.dispatch('px4', [hb(REAL, 3 << 16)])                        # radio that uu tien hon -> chuyen
+    r.dispatch('px4', [hb(REAL, 3 << 16)])                        # real radio has priority -> switch
     assert v.link == 'px4' and changed == ['px4']
     assert v.groups['status'].values['mode'] == 'Position'
-    r.dispatch('sitl', [hb(SITL, 7 << 16)])                       # SITL van gui: bi bo qua
+    r.dispatch('sitl', [hb(SITL, 7 << 16)])                       # SITL still sending: ignored
     assert v.groups['status'].values['mode'] == 'Position' and v.link == 'px4'
     att = rt(SITL, SITL.attitude_encode(0, 0.5, 0, 0, 0, 0, 0))
-    r.dispatch('sitl', [att])                                     # cung sysid/compid nhung sai link
+    r.dispatch('sitl', [att])                                     # same sysid/compid but wrong link
     assert v.groups['attitude'].values['valid'] is False
-    now[0] += 6                                                   # radio that im lang > 5 s
+    now[0] += 6                                                   # real radio silent > 5 s
     r.dispatch('sitl', [hb(SITL, 7 << 16)])
     assert v.link == 'sitl'
 
@@ -53,10 +53,10 @@ def test_real_radio_preferred_over_sitl_and_stale_reidentify(monkeypatch):
 def test_link_not_allowed_and_fixed_sysid():
     r, v = make({'autopilot_links': ['px4'], 'sysid': 1})
     r.dispatch('sitl', [hb(SITL)])
-    assert v.sysid is None                                        # link khong duoc phep
+    assert v.sysid is None                                        # link not allowed
     other = d.MAVLink(None, srcSystem=2, srcComponent=1)
     r.dispatch('px4', [hb(other)])
-    assert v.sysid is None                                        # sai sysid co dinh
+    assert v.sysid is None                                        # wrong fixed sysid
     r.dispatch('px4', [hb(REAL)])
     assert (v.link, v.sysid) == ('px4', 1)
 
@@ -66,8 +66,8 @@ def test_companion_data_only_from_jetson_link_and_ids():
     r.dispatch('px4', [hb(REAL)])
     st = lambda mav: rt(mav, mav.drone_component_status_encode(1, 0, 7.0, b'STREAMING'))  # noqa: E731
     gim = lambda mav: rt(mav, mav.drone_gimbal_state_encode(10.0, -30.0, 0.0, 1, 1))     # noqa: E731
-    r.dispatch('sitl', [st(JET), gim(JET)])                      # dung id nhung sai link
-    r.dispatch('jetson', [st(ROGUE), gim(ROGUE)])                # dung link nhung sai sysid
+    r.dispatch('sitl', [st(JET), gim(JET)])                      # right id but wrong link
+    r.dispatch('jetson', [st(ROGUE), gim(ROGUE)])                # right link but wrong sysid
     v.tick(time.monotonic())
     assert v.groups['companion'].items == [] and v.groups['gimbal'].values['valid'] is False
     r.dispatch('jetson', [st(JET), gim(JET)])
@@ -92,10 +92,10 @@ def test_shutdown_while_prefetching_waits_then_closes(tmp_path):
     assert pre.start('sat', (106.0, 11.0, 106.05, 11.05), 14, 16, 10000) == ''
     assert started.wait(2)
     assert pre.progress()['phase'] == 'running'
-    assert pre.cancel_and_wait(5.0)                               # da dung han truoc khi dong DB
+    assert pre.cancel_and_wait(5.0)                               # stopped in time before closing the DB
     assert pre.progress()['phase'] == 'idle'
     ts.stop()
-    assert ts.layers['sat'].cache.has(14, 0, 0) is False          # DB da dong: khong nem loi
+    assert ts.layers['sat'].cache.has(14, 0, 0) is False          # DB closed: no exception
 
 
 def test_single_flight_one_request_per_tile(tmp_path):
@@ -128,7 +128,7 @@ def test_config_validation_reports_specific_errors():
     }
     errors, warnings = validate(bad)
     text = '\n'.join(errors)
-    for needle in ('trung ten link', 'type "tcp"', 'host:port', 'radio2', 'commands.link',
-                   'compose tham chieu lop "sat"', 'thieu "id"', 'ui_rate_hz'):
+    for needle in ('duplicate link name', 'type "tcp"', 'host:port', 'radio2', 'commands.link',
+                   'unknown layer "sat"', 'missing "id"', 'ui_rate_hz'):
         assert needle in text, needle
     assert any('companion_link' in w for w in warnings)

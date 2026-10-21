@@ -1,6 +1,6 @@
-"""LinksAdapter: tinh trang cac link + nut Connect/Disconnect cho QML.
+"""LinksAdapter: link status and Connect / Disconnect for QML.
 
-Cong / baud nguoi dung chon duoc ghi nho (QSettings) va tu ket noi lai khi mo app.
+The chosen port / baud are remembered (QSettings) and reconnected when the app starts.
 """
 
 from PySide6.QtCore import QSettings, Slot

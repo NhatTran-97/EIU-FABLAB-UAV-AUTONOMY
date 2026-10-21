@@ -3,8 +3,8 @@ import QtQuick.Layouts
 import QtQuick.Controls.Basic
 import "../components"
 
-// Cai dat chung. Moi muc 1 khoi; them muc moi = them 1 khoi vao cot trai / phai.
-// Rong >= twoColumnMin: 2 cot chia deu chieu ngang; hep hon: 1 cot. About: hang rieng o duoi.
+// General settings. One block per section; add a section by adding a block to the left / right column.
+// Width >= twoColumnMin: two equal columns; narrower: one column. About: separate row at the bottom.
 ScrollView {
     id: settingsPage
     clip: true
@@ -25,15 +25,15 @@ ColumnLayout {
         columnSpacing: Theme.gap * 2
         rowSpacing: Theme.gap
 
-        // =========================== COT TRAI ===========================
+        // =========================== LEFT COLUMN ===========================
         ColumnLayout {
             Layout.fillWidth: true
-            Layout.preferredWidth: 1          // 2 cot cung preferredWidth -> chia deu
+            Layout.preferredWidth: 1          // same preferredWidth on both columns -> equal split
             Layout.minimumWidth: 0
             Layout.alignment: Qt.AlignTop
             spacing: Theme.gap
 
-            // ===================== MOI TRUONG BAY =====================
+            // ===================== FLIGHT ENVIRONMENT =====================
             Text { text: "Flight environment"; color: Theme.text; font.pixelSize: 15; font.bold: true; Layout.topMargin: 6 }
             Rectangle {
                 Layout.fillWidth: true
@@ -103,7 +103,7 @@ ColumnLayout {
                 }
             }
 
-            // ===================== GIONG NOI =====================
+            // ===================== VOICE =====================
             Text { text: "Voice"; color: Theme.text; font.pixelSize: 15; font.bold: true; Layout.topMargin: 6 }
             Rectangle {
                 Layout.fillWidth: true
@@ -143,7 +143,7 @@ ColumnLayout {
             }
         }
 
-        // =========================== COT PHAI ===========================
+        // =========================== RIGHT COLUMN ===========================
         ColumnLayout {
             Layout.fillWidth: true
             Layout.preferredWidth: 1
@@ -151,14 +151,14 @@ ColumnLayout {
             Layout.alignment: Qt.AlignTop
             spacing: Theme.gap
 
-            // ===================== BAN DO =====================
+            // ===================== MAP =====================
             Text { text: "Map — base layer"; color: Theme.text; font.pixelSize: 15; font.bold: true; Layout.topMargin: 6 }
 
             GridLayout {
                 id: layerGrid
                 readonly property int cardMin: 240
                 Layout.fillWidth: true
-                // so cot = so lop (toi da) hoac so the vua chieu ngang -> the gian deu het hang
+                // columns = number of layers (max) or cards that fit the width -> cards fill the row evenly
                 columns: Math.max(1, Math.min(mapService.layers.length,
                                               Math.floor((width + Theme.gap) / (cardMin + Theme.gap))))
                 columnSpacing: Theme.gap; rowSpacing: Theme.gap
@@ -230,7 +230,7 @@ ColumnLayout {
         }
     }
 
-    // ===================== ABOUT (hang rieng) =====================
+    // ===================== ABOUT (separate row) =====================
     Text { text: "About"; color: Theme.text; font.pixelSize: 15; font.bold: true; Layout.topMargin: 6 }
     Rectangle {
         Layout.fillWidth: true
@@ -268,8 +268,8 @@ ColumnLayout {
                     color: Theme.textDim; font.pixelSize: 12
                 }
             }
-            Rectangle {                      // anh campus, giu ti le
-                visible: aboutRow.width >= 560   // the qua hep -> an anh, giu chu
+            Rectangle {                      // campus photo, aspect ratio kept
+                visible: aboutRow.width >= 560   // card too narrow -> photo hidden, text kept
                 Layout.preferredWidth: 300; Layout.preferredHeight: 167
                 radius: 8; clip: true; color: "transparent"
                 Image {

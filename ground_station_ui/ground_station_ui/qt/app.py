@@ -1,10 +1,10 @@
-"""GcsApp: noi cac tang lai voi nhau.
+"""GcsApp: wires the layers together.
 
-    Link threads ──(lo message)──► LinkBridge (Signal, queued) ──► main thread:
+    Link threads ──(message batches)──► LinkBridge (Signal, queued) ──► main thread:
         MessageRouter.dispatch ──► FactGroup (Vehicle, LinkManager)
-    UiTicker (ui_rate_hz): tick() cac group theo thoi gian ──► adapter.flush() ──► QML
+    UiTicker (ui_rate_hz): time-based tick() of the groups ──► adapter.flush() ──► QML
 
-Toan bo domain chay tren main thread -> khong can khoa; thread chi o tang link.
+The whole domain runs on the main thread, so no locks are needed; threads exist only in the link layer.
 """
 
 import logging
@@ -36,6 +36,7 @@ from ground_station_ui.qt.features import FEATURES
 from ground_station_ui.qt.links_adapter import LinksAdapter
 from ground_station_ui.qt.map_adapter import MapAdapter
 from ground_station_ui.qt.mission_adapter import MissionAdapter
+from ground_station_ui.qt.planned_path_adapter import PlannedPathAdapter
 from ground_station_ui.qt.ports import PortList
 
 
@@ -43,7 +44,7 @@ log = logging.getLogger(__name__)
 
 
 class LinkBridge(QObject):
-    """Chuyen callback tu thread cua link ve main thread."""
+    """Move link-thread callbacks to the main thread."""
     messages = Signal(object, object)    # (link, [msgs])
     state = Signal(object)               # link
 
@@ -56,12 +57,12 @@ def load_config():
     for w in warnings:
         log.warning('%s: %s', path.name, w)
     if errors:
-        raise ValueError(f'Cau hinh {path} sai:\n  - ' + '\n  - '.join(errors))
+        raise ValueError(f'Invalid configuration {path}:\n  - ' + '\n  - '.join(errors))
     return cfg
 
 
 def app_info():
-    """Thong tin cho splash / About: phien ban (package.xml) + duong dan anh."""
+    """Info for the splash / About: version (package.xml) and image path."""
     import re
     from PySide6.QtCore import QUrl
     version = '0.1.0'
@@ -75,7 +76,7 @@ def app_info():
 
 
 def load_keys():
-    """API key cho nguon ban do (config/keys.yaml, khong commit). Khong co file -> {}."""
+    """API keys for map sources (config/keys.yaml, not committed). Missing file -> {}."""
     path = resource_dir('config') / 'keys.yaml'
     if not path.exists():
         return {}
@@ -86,7 +87,7 @@ def load_keys():
 class GcsApp:
     def __init__(self, config=None):
         cfg = config if config is not None else load_config()
-        geometry3d.register()          # LineGrid / Polyline cho trang 3D
+        geometry3d.register()          # LineGrid / Polyline for the 3D page
         self.router = MessageRouter()
         self.bridge = LinkBridge()
         self.bridge.messages.connect(self._dispatch, Qt.QueuedConnection)
@@ -95,24 +96,28 @@ class GcsApp:
                                  on_messages=self.bridge.messages.emit,
                                  on_state=self.bridge.state.emit)
         self.links.attach(self.router)
-        # thu muc GPX: tracks.dir (mac dinh data/tracks)
+        # GPX directory: tracks.dir (default data/tracks)
         vcfg = dict(cfg.get('vehicle', {}))
         vcfg.setdefault('track_dir', str(data_path((cfg.get('tracks') or {}).get('dir', 'data/tracks'))))
         self.vehicle = Vehicle(self.router, vcfg)
-        # doi autopilot -> xoa vet (khac nguon / khung toa do)
+        # autopilot changed -> clear trails (different source / frame)
         self.vehicle.on_identity_change.append(self.vehicle.groups['localPose'].clear_trail)
         self.vehicle.on_identity_change.append(self.vehicle.groups['track'].clear)
         self.px4_params = Px4ParamWatcher(self.vehicle, self.links)
         self.px4_params.attach(self.router)
-        self.commands = CommandSender(self.links)           # lenh qua companion (433)
+        self.commands = CommandSender(self.links)           # commands via the companion (433)
         self.commands.attach(self.router)
-        self.direct_commands = CommandSender(self.links)    # lenh thang autopilot (915)
+        self.direct_commands = CommandSender(self.links)    # commands directly to the autopilot (915)
         self.direct_commands.attach(self.router)
+        self.settings_commands = CommandSender(self.links)  # live mission settings; never replaces a flight command
+        self.settings_commands.attach(self.router)
         self.uploader = MissionUploader(self.links)
         self.uploader.attach(self.router)
-        self.mission = Mission(cfg.get('mission', {}).get('default_altitude', 20.0))
+        mission_cfg = cfg.get('mission', {})
+        self.mission = Mission(mission_cfg.get('default_altitude', 20.0), mission_cfg.get('default_speed', 2.0),
+                               mission_cfg.get('xy_tolerance', 0.75), mission_cfg.get('z_tolerance', 0.5))
 
-        # tile server localhost, cache .mbtiles (chay offline)
+        # localhost tile server with .mbtiles cache (works offline)
         map_cfg = cfg.get('map', {})
         self.tiles = TileServer(map_cfg.get('layers', []),
                                 data_path(map_cfg.get('cache_dir', 'data/maps')),
@@ -120,8 +125,9 @@ class GcsApp:
         self.tiles.start()
         self.prefetcher = Prefetcher(self.tiles)
 
-        # adapter tao sau vehicle / links (LinksAdapter co the auto-connect)
+        # adapters are created after vehicle / links (LinksAdapter may auto-connect)
         self.vehicle_qml = VehicleAdapter(self.vehicle)
+        self.planned_path_qml = PlannedPathAdapter(self.uploader, self.vehicle)   # 3D view reference path
         self.links_qml = LinksAdapter(self.links)
         self.ports_qml = PortList()
         self.map_qml = MapAdapter(self.tiles, self.prefetcher, map_cfg)
@@ -131,11 +137,12 @@ class GcsApp:
         self.env_qml = EnvironmentAdapter(self.vehicle, self.px4_params)
         self.telemetry_qml = TelemetryAdapter(self.vehicle, self.router, self.links)
         self.alerts_qml = AlertsAdapter(self.vehicle, self.links, self.env_qml)
-        self.commands_qml = CommandAdapter(self.commands, self.direct_commands, self.uploader, self.mission,
+        self.commands_qml = CommandAdapter(self.commands, self.direct_commands, self.settings_commands,
+                                           self.uploader, self.mission,
                                            self.vehicle, lambda: self.env_qml.state.get('effective', 'indoor'),
                                            cfg.get('commands', {}))
 
-        self._tick_errors = {}            # buoc -> t log loi cuoi
+        self._tick_errors = {}            # step -> time of the last logged error
         self._ticker = QTimer()
         self._ticker.timeout.connect(self._tick)
         self._ticker.start(int(1000 / float(cfg.get('ui_rate_hz', 5))))
@@ -153,26 +160,29 @@ class GcsApp:
             'voice': self.voice_qml,
             'alerts': self.alerts_qml,
             'telemetry': self.telemetry_qml,
+            'plannedPath': self.planned_path_qml,
             'features': [f for f in FEATURES if f['enabled']],
-            'appInfo': app_info(),   # trang chua san sang: an khoi menu
+            'appInfo': app_info(),   # pages not ready yet are hidden from the menu
         }
 
     def _dispatch(self, link, msgs):
         self.router.dispatch(link.name, msgs)
 
     def _tick(self):
-        """UiTicker (ui_rate_hz): tick domain -> flush adapter. Moi buoc try/except rieng: loi 1 buoc
-        khong chan cac buoc sau."""
+        """UiTicker (ui_rate_hz): tick the domain, then flush the adapters. Each step has its own try/except,
+        so an error in one step does not skip the others."""
         now = time.monotonic()
         steps = (
             ('vehicle', lambda: self.vehicle.tick(now)),
             ('links', lambda: self.links.tick(now)),
             ('commands', lambda: self.commands.tick(now)),
             ('direct_commands', lambda: self.direct_commands.tick(now)),
+            ('settings_commands', lambda: self.settings_commands.tick(now)),
             ('commands_qml.tick', lambda: self.commands_qml.tick(now)),
             ('px4_params', lambda: self.px4_params.tick(now)),
             ('uploader', lambda: self.uploader.tick(now)),
             ('vehicle_qml', self.vehicle_qml.flush),
+            ('planned_path_qml', self.planned_path_qml.flush),
             ('links_qml', self.links_qml.flush),
             ('map_qml', self.map_qml.flush),
             ('mission_qml', self.mission_qml.flush),
@@ -185,16 +195,16 @@ class GcsApp:
         for name, step in steps:
             try:
                 step()
-            except Exception:                            # log <= 1 lan / 10 s moi buoc
+            except Exception:                            # log at most once every 10 s per step
                 last = self._tick_errors.get(name, 0.0)
                 if now - last > 10.0:
                     self._tick_errors[name] = now
-                    log.exception('UI tick: buoc %s loi (cac buoc khac van chay)', name)
+                    log.exception('UI tick: step %s failed (other steps still run)', name)
 
     def shutdown(self):
         self._ticker.stop()
-        # dung prefetch truoc khi tile server dong SQLite
+        # stop prefetching before the tile server closes SQLite
         if not self.prefetcher.cancel_and_wait(6.0):
-            log.warning('Prefetch chua dung han khi tat app')
+            log.warning('Prefetch did not stop in time on shutdown')
         self.links.stop_all()
         self.tiles.stop()

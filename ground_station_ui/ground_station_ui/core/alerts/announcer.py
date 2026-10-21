@@ -1,9 +1,9 @@
-"""Thong bao bang giong noi: theo doi trang thai drone, sinh cau can doc khi co thay doi.
+"""Voice announcements: watch the drone state and produce the sentences to speak when it changes.
 
-Python thuan (test duoc): tick(now) doc cac FactGroup -> tra ve danh sach cau moi.
-Tang Qt (qt/voice.py) dua cau vao QTextToSpeech.
+Pure Python (testable): tick(now) reads the FactGroups and returns new sentences.
+The Qt layer (qt/voice.py) feeds them to QTextToSpeech.
 
-Su kien: doi che do bay, arm / disarm, mat / co lai ket noi PX4 va Jetson, pin xuong nguong.
+Events: flight mode change, arm / disarm, PX4 and Jetson link lost / restored, battery thresholds.
 """
 
 PHRASES = {
@@ -13,7 +13,7 @@ PHRASES = {
     'battery': 'Battery {pct} percent',
 }
 
-BATTERY_STEPS = (30, 20, 15, 10)     # doc 1 lan khi pin xuong duoi moi muc
+BATTERY_STEPS = (30, 20, 15, 10)     # announced once when the battery drops below each level
 
 
 class Announcer:
@@ -51,16 +51,16 @@ class Announcer:
 
             pct = bat.get('percent', -1)
             if pct is not None and pct >= 0:
-                step = next((x for x in sorted(BATTERY_STEPS) if pct <= x), None)   # muc thap nhat da cham
+                step = next((x for x in sorted(BATTERY_STEPS) if pct <= x), None)   # lowest level reached
                 if self._bat_step is None:
-                    # mau dau tien: chi bao khi dang bay va da duoi nguong
+                    # first sample: announce only when flying and already below a level
                     if step is not None and self._armed:
                         out.append(self._say('battery', pct=int(pct)))
                     self._bat_step = step if step is not None else 101
                 elif step is not None and step < self._bat_step:
                     out.append(self._say('battery', pct=int(pct)))
                     self._bat_step = step
-                elif pct > self._bat_step + 5:          # thay pin (hysteresis 5 %)
+                elif pct > self._bat_step + 5:          # battery swapped (5 % hysteresis)
                     self._bat_step = step if step is not None else 101
 
         jetson = bool(comp.get('linkAlive'))

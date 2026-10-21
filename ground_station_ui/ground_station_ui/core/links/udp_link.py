@@ -1,11 +1,12 @@
-"""Link UDP: PX4 SITL (mac dinh gui toi udp 14550), hoac MAVLink qua mang.
+"""UDP link: PX4 SITL (sends to udp 14550 by default) or MAVLink over a network.
 
-GCS nghe tren `listen` (host:port); dia chi phia drone hoc tu goi tin dau tien nhan duoc,
-moi goi gui di (heartbeat, lenh) tra ve dia chi do.
+The GCS listens on `listen` (host:port); the drone address is learned from the first received packet and
+every outgoing packet (heartbeat, commands) goes back to it.
 
-`remote` (host:port, tuy chon): dich gui khi chua co peer, vd PX4 SITL cong 18570. Instance MAVLink GCS
-cua PX4 gui toi peer gui goi gan nhat; neu chuong trinh khac (QGC, MAVROS) da gui toi 18570, app chi
-nghe se nhan 0 msg/s. `remote` -> heartbeat 1 Hz toi PX4 -> PX4 chuyen luong ve app.
+`remote` (host:port, optional): destination before any peer is known, e.g. PX4 SITL GCS port 18570. The PX4
+GCS MAVLink instance streams to the peer that sent it the latest packet; if another program (QGC, MAVROS)
+has sent to 18570, a listen-only app gets 0 msg/s. With `remote`, a 1 Hz heartbeat to PX4 pulls the stream
+back to this app.
 """
 
 import socket

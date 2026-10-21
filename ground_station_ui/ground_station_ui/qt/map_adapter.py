@@ -1,4 +1,4 @@
-"""MapAdapter: thong tin ban do offline cho QML (port tile server, cac lop, tai truoc vung)."""
+"""MapAdapter: offline map info for QML (tile server port, layers, area prefetch)."""
 
 import time
 from pathlib import Path
@@ -7,7 +7,7 @@ from PySide6.QtCore import Property, QObject, QSettings, QStandardPaths, Signal,
 
 from ground_station_ui.core.maps.geo import parse_latlon
 
-STATS_PERIOD_S = 2.0      # dem o trong SQLite khong can lam moi tick
+STATS_PERIOD_S = 2.0      # counting tiles in SQLite is not needed every tick
 
 
 class MapAdapter(QObject):
@@ -19,26 +19,26 @@ class MapAdapter(QObject):
         self.server = server
         self.prefetcher = prefetcher
         self._max_tiles = int(map_cfg.get('max_prefetch_tiles', 30000))
-        # Mo app: hien lai vung xem lan truoc (neu co), khong thi lay tu gcs.yaml
+        # On start, restore the last viewed area if any, otherwise use gcs.yaml
         self._settings = QSettings()
         center = map_cfg.get('default_center', [10.8231, 106.6297])
         self._center = [self._settings.value('map/lat', float(center[0]), type=float),
                         self._settings.value('map/lon', float(center[1]), type=float)]
         self._zoom = self._settings.value('map/zoom', float(map_cfg.get('default_zoom', 16)), type=float)
-        # toa do dien san o o nhap (tab Map); khong cau hinh -> de trong
+        # default text of the coordinate box (Map tab); empty when not configured
         sd = map_cfg.get('search_default')
         self._search_default = f'{float(sd[0]):.6f}, {float(sd[1]):.6f}' if sd else ''
         self._layers = []
         for l in server.layers.values():
             if l.hidden:
-                continue            # lop nguon cua lop ghep (nhan duong, dia danh...)
+                continue            # source layers of a composite layer (road labels, places...)
             srcs = server.sources(l.id)
             self._layers.append({
                 'id': l.id, 'title': l.title, 'attribution': l.attribution,
                 'offlineOnly': not any(s.url for s in srcs),
                 'maxZoom': min([l.max_zoom] + [s.max_zoom for s in srcs]),
             })
-        # Lop dang dung (chon o trang Cai dat), nho qua QSettings; lop cu khong con -> lop dau
+        # Current layer (chosen in Settings), remembered in QSettings; falls back to the first layer if it is gone
         ids = [l['id'] for l in self._layers]
         saved = self._settings.value('map/layer', '', type=str)
         self._current = saved if saved in ids else (ids[0] if ids else '')
@@ -93,18 +93,18 @@ class MapAdapter(QObject):
     defaultCenter = Property('QVariantList', _get_center, constant=True)
     defaultZoom = Property(float, _get_zoom, constant=True)
     maxPrefetchTiles = Property(int, _get_max_tiles, constant=True)
-    searchDefault = Property(str, _get_search_default, constant=True)   # "lat, lon" dien san o tim
+    searchDefault = Property(str, _get_search_default, constant=True)   # "lat, lon" prefilled in the search box
     online = Property(bool, _get_online, notify=changed)
     cache = Property('QVariantMap', _get_cache, notify=changed)        # layer id -> {tiles, sizeMb}
     prefetch = Property('QVariantMap', _get_progress, notify=changed)
-    qtCacheDir = Property(str, _get_qt_cache, constant=True)   # cache rieng cua QtLocation
+    qtCacheDir = Property(str, _get_qt_cache, constant=True)   # QtLocation's own cache
     currentLayer = Property(str, _get_current, _set_current, notify=layerChanged)
 
     @Slot(str, float, float, float, float, int, int, result=int)
     def estimateTiles(self, layer_id, west, south, east, north, zmin, zmax):
         from ground_station_ui.core.maps.tiles import count_tiles
         n_sources = len([s for s in self.server.sources(layer_id) if s.url]) or 1
-        # Gioi han: tra ve qua int32 cua Qt se OverflowError (vd zoom ra ca the gioi)
+        # Limit: values above Qt int32 raise OverflowError (e.g. zoomed out to the whole world)
         cap = self._max_tiles * 10
         return min(count_tiles(west, south, east, north, zmin, zmax, limit=cap) * n_sources, cap + 1)
 
@@ -116,7 +116,7 @@ class MapAdapter(QObject):
 
     @Slot(str, result='QVariantList')
     def parseLatLon(self, text):
-        """'11.052919, 106.666057' -> [lat, lon]; [] neu khong hop le."""
+        """'11.052919, 106.666057' -> [lat, lon]; [] if invalid."""
         ll = parse_latlon(text)
         return list(ll) if ll else []
 
@@ -143,7 +143,7 @@ class MapAdapter(QObject):
             cache = {}
             for lid in self.server.layers:
                 tiles = size = 0
-                for src in self.server.sources(lid):     # lop ghep = tong cac lop nguon
+                for src in self.server.sources(lid):     # composite layer = sum of its source layers
                     t, s = src.cache.stats()
                     tiles, size = tiles + t, size + s
                 cache[lid] = {'tiles': tiles, 'sizeMb': round(size / 1e6, 1)}

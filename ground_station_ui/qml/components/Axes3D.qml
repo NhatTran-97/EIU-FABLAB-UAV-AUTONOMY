@@ -1,11 +1,11 @@
 import QtQuick
 import QtQuick3D
 
-// Truc toa do kieu RViz: x do, y xanh la, z xanh duong (theo quy uoc ROS ENU / FLU).
-// Doi sang Qt Quick 3D (Y len): x -> +X, y -> -Z, z -> +Y  (xem qt/geometry3d.py).
+// RViz-style axes: x red, y green, z blue (ROS ENU / FLU convention).
+// Mapped to Qt Quick 3D (Y up): x -> +X, y -> -Z, z -> +Y (see qt/geometry3d.py).
 Node {
     id: axes
-    property real length: 100          // don vi scene (100 = 1 m)
+    property real length: 100          // scene units (100 = 1 m)
     property real thickness: 3
 
     component Bar: Model {
