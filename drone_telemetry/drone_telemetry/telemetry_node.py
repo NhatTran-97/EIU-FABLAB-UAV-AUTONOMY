@@ -25,6 +25,7 @@ import math
 import queue
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -46,6 +47,8 @@ PX4_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                      history=HistoryPolicy.KEEP_LAST, depth=5)
 
 # mission_manager progress state -> MAVLink MISSION_STATE
+PROGRESS_SAMPLES = 10    # receive times kept to measure the /mission/progress period
+PROGRESS_PERIODS = 3.0   # progress older than this many periods is stale (mission_manager stopped)
 MISSION_STATES = {'idle': 2, 'active': 3, 'paused': 4, 'complete': 5}   # NOT_STARTED, ACTIVE, PAUSED, COMPLETE
 
 
@@ -326,6 +329,7 @@ class TelemetryNode(Node):
         self.get_logger().info(f'commands: Take-off / Land via {via}'
                                + (' (mission_manager -> offboard_control -> PX4 OFFBOARD)' if send_mission else ''))
         self._progress = None
+        self._progress_times = []           # receive times of the last /mission/progress messages
         self._mission = MissionReceiver(self._link.mav, self._link.send, self._on_mission)
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL, history=HistoryPolicy.KEEP_LAST)
@@ -402,12 +406,24 @@ class TelemetryNode(Node):
             return
         changed = progress != self._progress
         self._progress = progress
+        self._progress_times = (self._progress_times + [self._now()])[-PROGRESS_SAMPLES:]
         if changed:
             self._send_progress()
 
+    def _progress_stale(self):
+        """True when mission_manager has gone quiet: no progress for PROGRESS_PERIODS times its longest recent
+        interval (it publishes at least once per second). The last state is then no longer repeated, so the
+        ground station does not show a mission that is not running."""
+        times = self._progress_times
+        if not times:
+            return True
+        intervals = [b - a for a, b in zip(times, times[1:])]
+        period = max(intervals) if intervals else 1.0
+        return self._now() - times[-1] > PROGRESS_PERIODS * max(period, 0.1)
+
     def _send_progress(self):
         """MISSION_CURRENT: current item, item count and mission state (ACTIVE / PAUSED / COMPLETE)."""
-        if self._progress is None or not self._link.is_open:
+        if self._progress is None or not self._link.is_open or self._progress_stale():
             return
         seq, total, state = self._progress
         self._link.send(self._link.mav.mission_current_encode(seq, total, state, 0))
@@ -520,8 +536,13 @@ def main(args=None):
     node = TelemetryNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass                    # Ctrl+C / launch shutdown: rclpy has already shut the context down
+    except RuntimeError:
+        # Humble race: a message taken while Ctrl+C shuts the context down raises RuntimeError in take_message;
+        # harmless during shutdown, a real error otherwise
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
         if rclpy.ok():
