@@ -18,6 +18,10 @@ Item {
     readonly property bool hasDrone: gps.lat !== null && gps.lat !== undefined && gps.lat !== 0
     readonly property string layerId: mapService.currentLayer     // chosen on the Settings page
     property bool addMode: false
+    // no new waypoints while the drone flies the mission; allowed again when it is paused (Hold), hovering or on the ground
+    readonly property bool missionRunning: vehicle.missionProgress.values.valid === true
+                                           && vehicle.missionProgress.values.state === "active"
+    onMissionRunningChanged: if (missionRunning) addMode = false
     readonly property bool indoor: flightEnv.state.effective === "indoor"
     property bool showWaypoints: false      // waypoint panel shown / hidden (remembered in Settings)
     property bool showTrack: true          // flown path (checkbox bottom left / 〰 button; remembered)
@@ -216,7 +220,7 @@ Item {
                     MouseArea {
                         anchors.fill: parent
                         onClicked: page.showTrack = !page.showTrack
-                        onPressAndHold: vehicle.clearTrack()
+                        onPressAndHold: clearConfirm.open()
                     }
                     Rectangle {                            // red dot: recording (armed)
                         visible: parent.tr.recording === true
@@ -309,17 +313,32 @@ Item {
                     id: legendRow
                     anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 8
                     spacing: 8
-                    CheckBox {
+                    // flown path toggle: own check box, so the style's indicator cannot overlap the label
+                    Item {
                         objectName: "showTrackBox"
-                        checked: page.showTrack
-                        onToggled: page.showTrack = checked
-                        padding: 0
-                        contentItem: RowLayout {
+                        implicitWidth: trackToggle.implicitWidth; implicitHeight: 24
+                        RowLayout {
+                            id: trackToggle
+                            anchors.verticalCenter: parent.verticalCenter
                             spacing: 6
-                            Item { width: 18 }                         // room for the check indicator
-                            Rectangle { width: 22; height: 4; radius: 2; color: page.trackColor }
-                            Text { text: "Flown path"; color: Theme.text; font.pixelSize: 12 }
+                            Rectangle {
+                                width: 16; height: 16; radius: 3
+                                color: page.showTrack ? page.trackColor : "transparent"
+                                border.color: page.showTrack ? page.trackColor : Theme.textDim; border.width: 1.5
+                                Text {
+                                    anchors.centerIn: parent; visible: page.showTrack
+                                    text: "✓"; color: "#161b22"; font.pixelSize: 12; font.bold: true
+                                }
+                            }
+                            Rectangle { width: 18; height: 3; radius: 1.5; color: page.trackColor; opacity: page.showTrack ? 1 : 0.35 }
+                            Text { text: "Flown path"; color: page.showTrack ? Theme.text : Theme.textDim; font.pixelSize: 12 }
                         }
+                        MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onClicked: page.showTrack = !page.showTrack
+                        }
+                        ToolTip.visible: trackHover.hovered; ToolTip.text: "Show or hide the flown path"
+                        HoverHandler { id: trackHover }
                     }
                     Text {
                         text: (parent.parent.tr.lengthM || 0).toFixed(0) + " m"
@@ -329,16 +348,59 @@ Item {
                         visible: parent.parent.tr.recording === true
                         text: "● REC"; color: Theme.error; font.pixelSize: 11; font.bold: true
                     }
-                    Button {
-                        text: "Clear"
-                        implicitHeight: 24; font.pixelSize: 11
-                        enabled: (parent.parent.tr.points || 0) > 0
-                        ToolTip.visible: hovered; ToolTip.text: "Clear the flown path on the map (saved GPX files are kept)"
-                        onClicked: vehicle.clearTrack()
+                    // clear the flown path (map + 3D), after a confirmation
+                    Rectangle {
+                        objectName: "clearPathBtn"
+                        readonly property bool active: (parent.parent.tr.points || 0) > 0 || (parent.parent.tr.lengthM || 0) > 0
+                                                       || (vehicle.localPose.values.trailPoints || 0) > 0
+                        implicitWidth: clearLabel.implicitWidth + 16; implicitHeight: 22; radius: 4
+                        color: active && clearHover.hovered ? Qt.rgba(Theme.error.r, Theme.error.g, Theme.error.b, 0.25) : "transparent"
+                        border.color: active ? Theme.error : Theme.border; border.width: 1
+                        opacity: active ? 1 : 0.45
+                        Text {
+                            id: clearLabel; anchors.centerIn: parent
+                            text: "✕ Clear path"; font.pixelSize: 11; font.bold: true
+                            color: parent.active ? Theme.error : Theme.textDim
+                        }
+                        HoverHandler { id: clearHover; cursorShape: parent.active ? Qt.PointingHandCursor : Qt.ArrowCursor }
+                        TapHandler { enabled: parent.active; onTapped: clearConfirm.open() }
+                        ToolTip.visible: clearHover.hovered
+                        ToolTip.text: "Delete the flown path on the map and in the 3D view (saved GPX files are kept)"
                     }
-                    Rectangle { width: 1; height: 18; color: Theme.border }
-                    Rectangle { width: 22; height: 3; radius: 1.5; color: Theme.accent }
+                    Rectangle { width: 1; height: 16; color: Theme.border }
+                    Rectangle { width: 18; height: 6; radius: 3; color: Theme.accent }
                     Text { text: "Planned"; color: Theme.textDim; font.pixelSize: 12 }
+                }
+            }
+
+            // ---- confirm clearing the flown path ----
+            Popup {
+                id: clearConfirm
+                anchors.centerIn: parent
+                modal: true; padding: 16
+                background: Rectangle { radius: Theme.radius; color: "#f2161b22"; border.color: Theme.error }
+                ColumnLayout {
+                    spacing: 10
+                    Text {
+                        text: "Delete the flown path?"; color: Theme.text; font.pixelSize: 15; font.bold: true
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                    Text {
+                        text: (vehicle.track.values.lengthM || 0).toFixed(0) + " m on the map and the 3D trail are removed.\n"
+                              + "Saved GPX files are kept" + (vehicle.track.values.recording ? "; recording goes on." : ".")
+                        color: Theme.textDim; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                    RowLayout {
+                        Layout.alignment: Qt.AlignHCenter; spacing: 10
+                        Button { text: "Cancel"; onClicked: clearConfirm.close() }
+                        Button {
+                            text: "Delete"; implicitWidth: 100; implicitHeight: 34
+                            background: Rectangle { radius: 6; color: parent.down ? Qt.darker(Theme.error, 1.4) : parent.hovered ? Qt.lighter(Theme.error, 1.15) : Theme.error }
+                            contentItem: Text { text: parent.text; color: "white"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            onClicked: { vehicle.clearFlownPath(); clearConfirm.close() }
+                        }
+                    }
                 }
             }
 
@@ -414,32 +476,6 @@ Item {
                     text: "⚠ Inside zone: " + zone
                     color: Theme.error; font.pixelSize: 12; font.bold: true; style: Text.Outline; styleColor: "black"
                 }
-                // pin info + add as waypoint
-                Rectangle {
-                    visible: page.pin !== null
-                    width: parent.width; height: 44; radius: 8
-                    color: "#ee161b22"; border.color: Theme.border
-                    RowLayout {
-                        anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 6
-                        Text {
-                            Layout.fillWidth: true
-                            text: page.pin ? page.pin.latitude.toFixed(6) + ", " + page.pin.longitude.toFixed(6) : ""
-                            color: Theme.text; font.pixelSize: 12; font.family: "monospace"
-                            elide: Text.ElideRight
-                        }
-                        Button {
-                            objectName: "pinToWaypoint"
-                            text: "＋ Waypoint"
-                            Layout.preferredWidth: 96
-                            onClicked: {
-                                mission.add(page.pin.latitude, page.pin.longitude)
-                                page.selected = mission.items.length - 1
-                                page.pin = null
-                            }
-                        }
-                        Button { text: "✕"; Layout.preferredWidth: 32; onClicked: page.pin = null }
-                    }
-                }
             }
 
             PrefetchPanel {
@@ -460,8 +496,9 @@ Item {
             Layout.fillHeight: true
             onHideRequested: { page.showWaypoints = false; page.addMode = false }
             addMode: page.addMode
+            addLocked: page.missionRunning
             selected: page.selected
-            onAddModeToggled: page.addMode = !page.addMode
+            onAddModeToggled: if (!page.missionRunning) page.addMode = !page.addMode
             onSelect: (i) => {
                 page.selected = i
                 var wp = mission.items[i]
@@ -531,7 +568,7 @@ Item {
             }
             TapHandler {
                 onTapped: (eventPoint) => {
-                    if (!page.addMode) return
+                    if (!page.addMode || page.missionRunning) return
                     var c = map.toCoordinate(eventPoint.position)
                     mission.add(c.latitude, c.longitude)
                     page.selected = mission.items.length - 1
@@ -569,9 +606,9 @@ Item {
                 }
             }
 
-            // ---- flight path ----
+            // ---- planned path (waypoints): wide, under the flown track, so the orange track shows inside it ----
             MapPolyline {
-                line.width: 3
+                line.width: 7
                 line.color: Theme.accent
                 path: {
                     var p = []
@@ -664,7 +701,7 @@ Item {
             property var trackLines: []
             Component {
                 id: trackLineComp
-                MapPolyline { z: 15; line.width: 4; line.color: page.trackColor; visible: page.showTrack }
+                MapPolyline { z: 15; line.width: 3; line.color: page.trackColor; visible: page.showTrack }
             }
             function trackLine(i) {
                 while (trackLines.length <= i) {

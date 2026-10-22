@@ -157,8 +157,73 @@ ScrollView {
                 staleAfter: 3.5
                 rows: [["Mode", st.linkAlive ? String(st.mode).toUpperCase() : ""],
                        ["Arming", st.linkAlive ? (st.armed ? "ARMED" : "DISARMED") : ""],
-                       ["Landed state", st.landed], ["Flight time", page.duration(st.flightTime || 0)],
+                       ["Landed state", st.landed + (st.landedSource === "jetson" ? " (from Jetson altitude)" : st.landedSource === "px4_disarmed" ? " (disarmed)" : "")], ["Flight time", page.duration(st.flightTime || 0)],
                        ["Failsafe", st.linkAlive ? (st.failsafe ? "ACTIVE" : "None") : ""]]
+            }
+        }
+
+        // ---------------- PX4 safety parameters (RTL, geofence, landing, speed) ----------------
+        Rectangle {
+            objectName: "px4SafetyParams"
+            Layout.fillWidth: true
+            implicitHeight: safetyCol.implicitHeight + 24
+            radius: Theme.radius; color: Theme.panel
+            border.color: (px4Params.values.problems || []).length > 0 ? Theme.warn : Theme.border
+            ColumnLayout {
+                id: safetyCol
+                anchors.fill: parent; anchors.margins: 12
+                spacing: 6
+                RowLayout {
+                    Text { text: "PX4 safety parameters"; color: Theme.text; font.pixelSize: 15; font.bold: true }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        text: px4Params.values.profile !== "unknown"
+                              ? "compared with config/px4/" + px4Params.values.profile + ".params and the mission"
+                              : "read from PX4 over radio 915"
+                        color: Theme.textDim; font.pixelSize: 11
+                    }
+                }
+                RowLayout {
+                    spacing: 16
+                    Text { Layout.preferredWidth: 330; text: "Parameter"; color: Theme.textDim; font.pixelSize: 11; font.bold: true }
+                    Text { Layout.preferredWidth: 80; text: "PX4"; color: Theme.textDim; font.pixelSize: 11; font.bold: true }
+                    Text { Layout.preferredWidth: 60; text: "File"; color: Theme.textDim; font.pixelSize: 11; font.bold: true }
+                    Text { text: "Check"; color: Theme.textDim; font.pixelSize: 11; font.bold: true }
+                }
+                Repeater {
+                    model: px4Params.items
+                    delegate: RowLayout {
+                        required property var modelData
+                        readonly property color tint: modelData.level === "warn" ? Theme.warn
+                                                    : modelData.level === "ok" ? Theme.ok : Theme.textDim
+                        Layout.fillWidth: true
+                        spacing: 16
+                        Text {
+                            Layout.preferredWidth: 330
+                            text: modelData.label + "  (" + modelData.name + ")"
+                            color: Theme.text; font.pixelSize: 12; elide: Text.ElideRight
+                        }
+                        Text {
+                            Layout.preferredWidth: 80
+                            text: modelData.value === null || modelData.value === undefined ? "—"
+                                  : Number(modelData.value).toFixed(Math.abs(modelData.value % 1) > 1e-6 ? 2 : 0)
+                                    + (modelData.unit ? " " + modelData.unit : "")
+                            color: parent.tint; font.pixelSize: 12; font.bold: true; font.family: "monospace"
+                        }
+                        Text {
+                            Layout.preferredWidth: 60
+                            text: modelData.expected === null || modelData.expected === undefined ? ""
+                                  : Number(modelData.expected).toFixed(Math.abs(modelData.expected % 1) > 1e-6 ? 2 : 0)
+                            color: Theme.textDim; font.pixelSize: 12; font.family: "monospace"
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: (modelData.level === "warn" ? "⚠ " : modelData.level === "ok" ? "✓ " : "") + modelData.note
+                            color: modelData.level === "warn" ? Theme.warn : Theme.textDim
+                            font.pixelSize: 12; wrapMode: Text.WordWrap
+                        }
+                    }
+                }
             }
         }
 

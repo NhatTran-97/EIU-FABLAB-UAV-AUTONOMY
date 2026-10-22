@@ -10,7 +10,7 @@ BATTERY_CRIT = 15
 RADIO_BUF_WARN = 30
 
 
-def evaluate(vehicle, links, env_effective='indoor', env_mismatch=''):
+def evaluate(vehicle, links, env_effective='indoor', env_mismatch='', px4_problems=()):
     g = vehicle.groups
     st, gps, bat = g['status'].values, g['gps'].values, g['battery'].values
     comp = g['companion'].values
@@ -42,6 +42,8 @@ def evaluate(vehicle, links, env_effective='indoor', env_mismatch=''):
 
     if env_mismatch:
         add('warning', 'Config', env_mismatch)
+    for text in px4_problems:                    # RTL / geofence / landing parameters (param_checks.py)
+        add('warning', 'PX4 params', text)
 
     jet_link = links.get(getattr(vehicle, 'companion_link', 'jetson'), {})
     if not comp.get('linkAlive'):

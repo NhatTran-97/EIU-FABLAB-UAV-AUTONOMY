@@ -63,13 +63,13 @@ Item {
         case "in_progress": return st.label + ": Jetson in progress…"
                                    + (st.attempt > 0 ? " (no reply, asking " + st.attempt + "/" + st.retries + ")" : "")
         case "accepted":    return "✓ " + st.label + ": accepted by Jetson" + took
-        case "rejected":    return "✕ " + st.label + ": temporarily rejected" + step
-        case "denied":      return "✕ " + st.label + ": denied by Jetson — see PX4 messages"
+        case "rejected":    return "✕ " + st.label + ": temporarily rejected" + step + (st.message ? " — " + st.message : "")
+        case "denied":      return "✕ " + st.label + ": denied by Jetson" + (st.message ? " — " + st.message : "")
         // Link test + UNSUPPORTED: drone_telemetry has no ping handler, but the packet reached the Jetson
         case "unsupported": return st.label === "Link test" ? "✓ Link test: reached Jetson" + took
                                                               + " (old drone_telemetry — rebuild for ping)"
                                                             : "✕ " + st.label + ": not supported"
-        case "failed":      return "✕ " + st.label + ": failed" + step
+        case "failed":      return "✕ " + st.label + ": failed" + step + (st.message ? " — " + st.message : "")
         case "timeout":     return "⚠ " + st.label + ": Jetson not responding" + took + " — check radio 433"
         case "no_link":     return "⚠ Link not open: " + commands.targetLink + " (tab Connections)"
         case "blocked":     return "✕ " + st.label + ": " + st.message
@@ -139,7 +139,7 @@ Item {
                     visible: root.confirming === "mission"
                     Layout.alignment: Qt.AlignHCenter
                     text: "Speed " + (mission.values.speed || 2).toFixed(1) + " m/s · tolerance XY "
-                        + (mission.values.xyTolerance || 0.75).toFixed(2) + " / Z " + (mission.values.zTolerance || 0.5).toFixed(2)
+                        + (mission.values.xyTolerance || 0.5).toFixed(2) + " / Z " + (mission.values.zTolerance || 0.5).toFixed(2)
                         + " m (waypoint list)"
                     color: Theme.text; font.pixelSize: 12
                 }
@@ -213,7 +213,18 @@ Item {
                     Button {
                         objectName: "uploadConfirm"
                         text: conflictText.visible ? "Send anyway" : "Send"
-                        highlighted: true
+                        implicitWidth: 110; implicitHeight: 36
+                        // filled primary button: blue (red when waypoints are in a no-fly zone), darker while pressed
+                        readonly property color base: conflictText.visible ? Theme.error : Theme.accent
+                        background: Rectangle {
+                            radius: 6
+                            color: parent.down ? Qt.darker(parent.base, 1.4)
+                                 : parent.hovered ? Qt.lighter(parent.base, 1.15) : parent.base
+                        }
+                        contentItem: Text {
+                            text: parent.text; color: "white"; font.pixelSize: 14; font.bold: true
+                            horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                        }
                         onClicked: {
                             if (root.testMode) commands.testUploadMission(); else commands.uploadMission()
                             root.confirming = ""
@@ -336,10 +347,27 @@ Item {
                 spacing: 12
                 ColumnLayout {
                     spacing: 2
-                    Text {
-                        text: (root.missionPaused ? "⏸ Mission waiting" : "▶ Mission") + " · waypoint "
-                            + root.prog.seq + "/" + root.prog.total
-                        color: root.missionPaused ? Theme.warn : Theme.text; font.pixelSize: 14; font.bold: true
+                    // status only (not a button): no play symbol, the current step, and a progress bar
+                    RowLayout {
+                        spacing: 6
+                        Rectangle {
+                            width: 8; height: 8; radius: 4
+                            color: root.missionPaused ? Theme.warn : Theme.ok
+                        }
+                        Text {
+                            text: (root.missionPaused ? "Mission paused" : "Mission running") + " · waypoint "
+                                + root.prog.seq + "/" + root.prog.total
+                                + (root.prog.step && !root.missionPaused ? " · " + root.prog.step : "")
+                            color: root.missionPaused ? Theme.warn : Theme.text; font.pixelSize: 13; font.bold: true
+                        }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true; height: 3; radius: 1.5; color: Theme.border
+                        Rectangle {
+                            height: parent.height; radius: 1.5
+                            width: parent.width * (root.prog.total > 0 ? Math.max(0, root.prog.seq - 1) / root.prog.total : 0)
+                            color: root.missionPaused ? Theme.warn : Theme.ok
+                        }
                     }
                     Text {
                         visible: root.missionPaused && root.prog.text !== ""
@@ -352,8 +380,18 @@ Item {
                     objectName: "continueBtn"
                     visible: root.missionPaused
                     text: "▶  Continue"
-                    highlighted: true
                     enabled: root.open("continue")
+                    implicitHeight: 36
+                    // the only clickable item here: filled button, so it cannot be mistaken for the status text
+                    background: Rectangle {
+                        radius: 6; opacity: parent.enabled ? 1 : 0.4
+                        color: parent.down ? Qt.darker(Theme.ok, 1.4) : parent.hovered ? Qt.lighter(Theme.ok, 1.15) : Theme.ok
+                    }
+                    contentItem: Text {
+                        text: parent.text; color: "white"; font.pixelSize: 14; font.bold: true
+                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                        leftPadding: 10; rightPadding: 10
+                    }
                     ToolTip.visible: hovered
                     ToolTip.text: root.g["continue"] ? root.g["continue"]
                         : "Manual task done (or resume after a pause): the drone takes back OFFBOARD and goes on"

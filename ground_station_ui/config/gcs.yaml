@@ -93,7 +93,7 @@ mission:
   default_speed: 2.0
   # m, distance at which a waypoint counts as reached (horizontal / vertical), sent with Start mission and
   # editable in the waypoint list. The Jetson accepts 0.2-5 m (xy) and 0.1-3 m (z).
-  xy_tolerance: 0.75
+  xy_tolerance: 0.5
   z_tolerance: 0.5
 
 # Drone identity (one drone). The autopilot is accepted only on autopilot_links, in priority order: while the

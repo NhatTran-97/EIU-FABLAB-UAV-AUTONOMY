@@ -32,7 +32,7 @@ only the cache is used.
 - **Own drone orthophoto** (sharpest, and licence-free): WebODM → `orthophoto.tif` → `gdal2tiles.py --xyz`
   / `rio mbtiles` → add a layer with `file: ortho.mbtiles` (no `url`) in `gcs.yaml`.
 - **Go to a position**: type `11.052919, 106.666057` (copied from Google Maps works) in the top-left box →
-  Enter: the map flies there and drops a red pin; *＋ Waypoint* adds that point. The last viewed area is
+  Enter: the map flies there and drops a red pin (waypoints are added in waypoint mode by clicking the map). The last viewed area is
   remembered.
 - **Map view**: right-drag rotates (horizontal) and tilts (vertical) the map; ⟲N resets it. On a tilted map
   the drone is drawn as the 3D model, raised above its ground shadow by its altitude. The marker scales
@@ -150,7 +150,7 @@ mission / Hold / RTL / Land.
 `gcs.yaml`). It is sent with Start mission and applies to every leg of the mission; the Jetson limits it to its
 `max_cruise_speed` (5 m/s), and PX4 `MPC_XY_VEL_MAX` remains the hard limit.
 
-**Arrival tolerance:** also in the waypoint list (*XY* / *Z*, default `mission.xy_tolerance` 0.75 m and
+**Arrival tolerance:** also in the waypoint list (*XY* / *Z*, default `mission.xy_tolerance` 0.5 m and
 `mission.z_tolerance` 0.5 m in `gcs.yaml`): the distance at which a waypoint counts as reached. Sent with Start
 mission for the whole mission; the Jetson accepts 0.2–5 m (XY) and 0.1–3 m (Z).
 
@@ -170,9 +170,17 @@ Jetson's message and a **▶ Continue** button:
 ## Data inside the package
 
 `data/maps/*.mbtiles` (offline map cache), `data/airspace/` (airspace), `data/tracks/` (GPX flight tracks),
-`config/keys.yaml` (API keys). Copying the whole `ground_station_ui` directory to another machine is enough
-to run it with the downloaded maps. `*.mbtiles`, `data/tracks/` and `keys.yaml` are git-ignored (large /
+`data/session.json` (last session), `config/keys.yaml` (API keys). Copying the whole `ground_station_ui` directory to another machine is enough
+to run it with the downloaded maps. `*.mbtiles`, `data/tracks/`, `session.json` and `keys.yaml` are git-ignored (large /
 private), so they are not included when shared through git.
+
+**Session restore.** The waypoint list with its tasks, the mission speed and tolerances, the last waypoints
+sent with Send WP (planned path in the 3D view) and the flown path on the map are saved to
+`data/session.json` (every 2 s when something changed, and on exit) and restored at start-up. If the app is
+closed during a flight and reopened within 10 minutes while the drone is still armed, the recording continues
+as the same flight and GPX file; if the drone has landed in the meantime, the interrupted flight is written to
+GPX. Delete the file to start empty. The 3D trail is not restored: it is in the EKF frame, which may have been
+reset.
 
 ## Running
 

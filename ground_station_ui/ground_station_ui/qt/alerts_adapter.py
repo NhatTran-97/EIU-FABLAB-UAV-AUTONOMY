@@ -8,14 +8,16 @@ from ground_station_ui.core.alerts.health import evaluate
 class AlertsAdapter(QObject):
     changed = Signal()
 
-    def __init__(self, vehicle, links, env, parent=None):
+    def __init__(self, vehicle, links, env, px4_params=None, parent=None):
         super().__init__(parent)
         self.vehicle, self.links, self.env = vehicle, links, env
+        self.px4_params = px4_params
         self._items = []
 
     def flush(self):
         st = self.env.property('state') or {}
-        items = evaluate(self.vehicle, self.links.values, st.get('effective', 'indoor'), st.get('mismatch', ''))
+        items = evaluate(self.vehicle, self.links.values, st.get('effective', 'indoor'), st.get('mismatch', ''),
+                         self.px4_params.values['problems'] if self.px4_params is not None else ())
         if items != self._items:
             self._items = items
             self.changed.emit()

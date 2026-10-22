@@ -1,5 +1,6 @@
-"""Read a few PX4 parameters (PARAM_REQUEST_READ -> PARAM_VALUE) to learn whether the indoor or outdoor
-parameter set is loaded (config/px4/indoor.params / outdoor.params).
+"""Read a few PX4 parameters (PARAM_REQUEST_READ -> PARAM_VALUE): the EKF2 ones tell whether the indoor or
+outdoor parameter set is loaded (config/px4/indoor.params / outdoor.params); the safety ones (RTL, geofence,
+landing, speed) are checked by core/vehicle/param_checks.py and shown on the Telemetry page.
 
 Re-read periodically, since another file may be loaded with QGC while the app is running.
 """
@@ -7,10 +8,14 @@ Re-read periodically, since another file may be loaded with QGC while the app is
 import struct
 import time
 
+import os
+
 from ground_station_ui.core.facts import FactGroup
 from ground_station_ui.core.mavlink import drone_dialect as mavlink
+from ground_station_ui.core.vehicle import param_checks
 
-WATCHED = ('EKF2_GPS_CTRL', 'EKF2_HGT_REF')
+PROFILE_PARAMS = ('EKF2_GPS_CTRL', 'EKF2_HGT_REF')
+WATCHED = PROFILE_PARAMS + param_checks.NAMES
 RETRY_S = 3.0          # no value yet -> ask again after this
 REFRESH_S = 30.0       # value known -> re-read to catch changes
 
@@ -50,10 +55,17 @@ def resolve_environment(mode, profile, gps_fix):
 
 
 class Px4ParamWatcher(FactGroup):
-    """values: EKF2_GPS_CTRL, EKF2_HGT_REF (None = unknown), profile."""
+    """values: every WATCHED parameter (None = not read yet), profile, problems (safety check texts);
+    items: one row per safety parameter (param_checks.check).
 
-    def __init__(self, vehicle, links, link_name='px4'):
-        super().__init__(profile='unknown', **{n: None for n in WATCHED})
+    context: callable returning (mission waypoints, home (lat, lon) or None, mission speed), set by the app so
+    the checks can compare the geofence with the mission."""
+
+    def __init__(self, vehicle, links, link_name='px4', params_dir=None):
+        super().__init__(profile='unknown', problems=[], **{n: None for n in WATCHED})
+        self.params_dir = params_dir
+        self.context = lambda: ([], None, None)
+        self._expected = {}             # profile -> {name: value} from the parameter file
         self.vehicle = vehicle
         self.links = links
         self.link_name = link_name
@@ -73,7 +85,18 @@ class Px4ParamWatcher(FactGroup):
         self.set(**{name: decode_param(m)})
         self.set(profile=px4_profile(self.values['EKF2_GPS_CTRL'], self.values['EKF2_HGT_REF']))
 
+    def _check(self):
+        profile = self.values['profile']
+        if profile not in self._expected:
+            path = os.path.join(self.params_dir, f'{profile}.params') if self.params_dir else ''
+            self._expected[profile] = param_checks.load_params_file(path) if profile != 'unknown' else {}
+        mission, home, speed = self.context()
+        rows, problems = param_checks.check(self.values, self._expected[profile], mission, home, speed)
+        self.set_items(rows)
+        self.set(problems=problems)
+
     def tick(self, now):
+        self._check()
         if self.vehicle.sysid is None:
             return
         link = self.links.get(self.link_name)

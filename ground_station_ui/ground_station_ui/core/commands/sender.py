@@ -43,7 +43,8 @@ class CommandTarget:
 class CommandSender(FactGroup):
     """values: busy, label, state (idle|sending|in_progress|accepted|rejected|denied|unsupported|
     failed|timeout|no_link|blocked), attempt (consecutive sends without reply), retries,
-    route (target name), message (blocked reason), step / steps (multi-step commands),
+    route (target name), message (blocked reason, or the target's STATUSTEXT explaining a refusal),
+    step / steps (multi-step commands),
     elapsed (seconds from press to result; -1 = pending)."""
 
     def __init__(self, links):
@@ -54,6 +55,16 @@ class CommandSender(FactGroup):
 
     def attach(self, router):
         router.subscribe('COMMAND_ACK', self.on_ack)
+        router.subscribe('STATUSTEXT', self.on_text)
+
+    def on_text(self, m, link_name):
+        """The target explains a refusal with a STATUSTEXT sent just before its COMMAND_ACK: keep the latest one
+        received while the command is pending, to show it with the result."""
+        p = self._pending
+        if p is None or link_name != p['target'].link:
+            return
+        if m.get_srcSystem() == p['target'].system and m.get_srcComponent() == p['target'].component:
+            p['reason'] = m.text
 
     # --- send ---------------------------------------------------------------------------
     def send(self, target, command, params=(), label=''):
@@ -91,7 +102,9 @@ class CommandSender(FactGroup):
 
     def _finish(self, state):
         p, self._pending = self._pending, None
-        self.set(busy=False, state=state, elapsed=round(time.monotonic() - p['started'], 1) if p else -1.0)
+        reason = (p or {}).get('reason', '') if state != 'accepted' else ''
+        self.set(busy=False, state=state, message=reason,
+                 elapsed=round(time.monotonic() - p['started'], 1) if p else -1.0)
 
     # --- ACK handling ---------------------------------------------------------------------
     def on_ack(self, m, link_name):

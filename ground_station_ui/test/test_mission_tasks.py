@@ -122,3 +122,89 @@ def test_option_changes_notify_the_live_settings_hook():
     m.set_speed(0)                                                    # ignored, no notification
     m.set_tolerances(0.5, 0.3)
     assert len(calls) == 2
+
+
+def test_flying_waypoint_is_highlighted_only_for_the_uploaded_list():
+    from ground_station_ui.core.mission.mission import flying_index
+    m = Mission(default_altitude=10.0)
+    for i in range(3):
+        m.add(11.0 + i * 1e-4, 106.0)
+    uploaded = [dict(w) for w in m.items]
+    prog = {'valid': True, 'state': 'active', 'seq': 2, 'total': 3}
+    assert flying_index(m.items, uploaded, prog) == 1
+    assert flying_index(m.items, uploaded, dict(prog, state='paused')) == 1
+    assert flying_index(m.items, uploaded, dict(prog, state='complete')) == -1
+    assert flying_index(m.items, uploaded, dict(prog, valid=False)) == -1
+    m.move(0, 11.5, 106.0)                                            # edited after Send WP
+    assert flying_index(m.items, uploaded, prog) == -1
+
+
+def test_mission_banner_hidden_once_px4_reports_disarmed():
+    router = MessageRouter()
+    v = Vehicle(router)
+    g = v.groups['missionProgress']
+    router.dispatch('jetson', [roundtrip(JETSON, JETSON.mission_current_encode(1, 6, 3, 0))])
+    v.groups['status'].values.update(linkAlive=True, armed=True)
+    g.tick(0.0)
+    assert g.values['valid'] and g.values['state'] == 'active'
+    v.groups['status'].values['armed'] = False                         # landed and disarmed
+    g.tick(0.0)
+    assert not g.values['valid']
+
+
+def test_refusal_reason_from_the_target_is_kept_with_the_result():
+    from ground_station_ui.core.commands.sender import CommandSender, CommandTarget
+
+    class Link:
+        def send(self, m):
+            return True
+
+    class Links:
+        def get(self, name):
+            return Link()
+
+    s = CommandSender(Links())
+    t = CommandTarget('jetson', 1, 191, 1.5, 3, name='Jetson')
+    s.send(t, d.MAV_CMD_MISSION_START, label='Start mission')
+    s.on_text(roundtrip(JETSON, JETSON.statustext_encode(4, b'Start mission: vehicle is on the ground')), 'jetson')
+    s.on_ack(roundtrip(JETSON, JETSON.command_ack_encode(d.MAV_CMD_MISSION_START, d.MAV_RESULT_DENIED, 0, 0, 255, 190)),
+             'jetson')
+    assert s.values['state'] == 'denied' and 'on the ground' in s.values['message']
+
+
+def test_landed_state_estimated_from_jetson_when_px4_link_is_lost():
+    v = Vehicle(MessageRouter())
+    st = v.groups['status']
+    st.set(landed='IN AIR', landedSource='px4')                        # last PX4 report before the 915 link dropped
+    v.groups['companion'].values['linkAlive'] = True
+    v.groups['flight'].values['altHome'] = 0.1                         # Jetson: back on the ground after RTL
+    st.tick(100.0)
+    assert (st.values['landed'], st.values['landedSource']) == ('ON GROUND', 'jetson')
+    v.groups['flight'].values['altHome'] = 8.0
+    st.tick(100.0)
+    assert st.values['landed'] == 'IN AIR'
+    v.groups['companion'].values['linkAlive'] = False                 # nothing known
+    st.tick(100.0)
+    assert st.values['landed'] == '—'
+
+
+def test_landed_state_prefers_disarmed_then_a_fresh_px4_report():
+    import time as _t
+    v = Vehicle(MessageRouter())
+    st = v.groups['status']
+    now = _t.monotonic()
+    st._last_hb = now
+    st._ext = (now, 'IN AIR')
+    st.values['armed'] = True
+    st.tick(now)
+    assert (st.values['landed'], st.values['landedSource']) == ('IN AIR', 'px4')
+    st.values['armed'] = False                                         # RTL landed, PX4 disarmed
+    st.tick(now)
+    assert st.values['landed'] == 'ON GROUND'
+    st.values['armed'] = True                                          # armed on the ground, IN AIR report is old
+    v.groups['companion'].values['linkAlive'] = True
+    v.groups['flight'].values['altHome'] = 0.0
+    st.tick(now + 4.0)
+    st._last_hb = now + 4.0
+    st.tick(now + 4.0)
+    assert (st.values['landed'], st.values['landedSource']) == ('ON GROUND', 'jetson')

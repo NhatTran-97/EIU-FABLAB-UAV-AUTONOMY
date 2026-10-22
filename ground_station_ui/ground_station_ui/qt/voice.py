@@ -16,11 +16,11 @@ log = logging.getLogger(__name__)
 class VoiceAdapter(QObject):
     changed = Signal()
 
-    def __init__(self, vehicle, parent=None):
+    def __init__(self, vehicle, senders=(), uploader=None, parent=None):
         super().__init__(parent)
         self._settings = QSettings()
         self._enabled = self._settings.value('voice/enabled', True, type=bool)
-        self.announcer = Announcer(vehicle)
+        self.announcer = Announcer(vehicle, senders, uploader)
         self._tts = None
         self._last = ''
         try:

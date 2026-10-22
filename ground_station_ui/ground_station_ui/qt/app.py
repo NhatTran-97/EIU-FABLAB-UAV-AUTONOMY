@@ -21,10 +21,11 @@ from ground_station_ui.core.maps.tile_server import TileServer
 from ground_station_ui.core.mission.mission import Mission
 from ground_station_ui.core.mission.uploader import MissionUploader
 from ground_station_ui.core.router import MessageRouter
+from ground_station_ui.core.session import SessionStore
 from ground_station_ui.core.vehicle.params import Px4ParamWatcher
 from ground_station_ui.core.vehicle.vehicle import Vehicle
 from ground_station_ui.paths import data_path, resource_dir
-from ground_station_ui.qt.adapters import VehicleAdapter
+from ground_station_ui.qt.adapters import GroupAdapter, VehicleAdapter
 from ground_station_ui.qt.alerts_adapter import AlertsAdapter
 from ground_station_ui.qt.telemetry_adapter import TelemetryAdapter
 from ground_station_ui.qt.airspace_adapter import AirspaceAdapter
@@ -103,7 +104,7 @@ class GcsApp:
         # autopilot changed -> clear trails (different source / frame)
         self.vehicle.on_identity_change.append(self.vehicle.groups['localPose'].clear_trail)
         self.vehicle.on_identity_change.append(self.vehicle.groups['track'].clear)
-        self.px4_params = Px4ParamWatcher(self.vehicle, self.links)
+        self.px4_params = Px4ParamWatcher(self.vehicle, self.links, params_dir=str(resource_dir('config') / 'px4'))
         self.px4_params.attach(self.router)
         self.commands = CommandSender(self.links)           # commands via the companion (433)
         self.commands.attach(self.router)
@@ -115,7 +116,24 @@ class GcsApp:
         self.uploader.attach(self.router)
         mission_cfg = cfg.get('mission', {})
         self.mission = Mission(mission_cfg.get('default_altitude', 20.0), mission_cfg.get('default_speed', 2.0),
-                               mission_cfg.get('xy_tolerance', 0.75), mission_cfg.get('z_tolerance', 0.5))
+                               mission_cfg.get('xy_tolerance', 0.5), mission_cfg.get('z_tolerance', 0.5))
+
+        # PX4 safety checks compare the geofence with the mission the drone flies (last Send WP, else the list)
+        def _param_context():
+            home = self.vehicle.groups['home'].values
+            return (self.uploader.uploaded or self.mission.items,
+                    (home['lat'], home['lon']) if home.get('valid') else None, self.mission.values['speed'])
+        self.px4_params.context = _param_context
+
+        # last session (waypoints, uploaded waypoints, flown path): restored before the adapters read them
+        self.session = SessionStore(data_path((cfg.get('session') or {}).get('file', 'data/session.json')),
+                                    self.mission, self.uploader, self.vehicle.groups['track'],
+                                    status_groups={'commands': self.commands, 'direct_commands': self.direct_commands,
+                                                   'settings_commands': self.settings_commands,
+                                                   'uploader': self.uploader},
+                                    messages=self.vehicle.groups['messages'],
+                                    pose=self.vehicle.groups['localPose'])
+        self.session.load()
 
         # localhost tile server with .mbtiles cache (works offline)
         map_cfg = cfg.get('map', {})
@@ -133,10 +151,12 @@ class GcsApp:
         self.map_qml = MapAdapter(self.tiles, self.prefetcher, map_cfg)
         self.mission_qml = MissionAdapter(self.mission)
         self.airspace_qml = AirspaceAdapter(cfg.get('airspace', {}))
-        self.voice_qml = VoiceAdapter(self.vehicle)
+        # voice: drone events, results of flight commands and Send WP, battery warnings
+        self.voice_qml = VoiceAdapter(self.vehicle, (self.commands, self.direct_commands), self.uploader)
         self.env_qml = EnvironmentAdapter(self.vehicle, self.px4_params)
         self.telemetry_qml = TelemetryAdapter(self.vehicle, self.router, self.links)
-        self.alerts_qml = AlertsAdapter(self.vehicle, self.links, self.env_qml)
+        self.alerts_qml = AlertsAdapter(self.vehicle, self.links, self.env_qml, self.px4_params)
+        self.px4_params_qml = GroupAdapter(self.px4_params)          # PX4 safety parameters (Telemetry page)
         self.commands_qml = CommandAdapter(self.commands, self.direct_commands, self.settings_commands,
                                            self.uploader, self.mission,
                                            self.vehicle, lambda: self.env_qml.state.get('effective', 'indoor'),
@@ -161,6 +181,7 @@ class GcsApp:
             'alerts': self.alerts_qml,
             'telemetry': self.telemetry_qml,
             'plannedPath': self.planned_path_qml,
+            'px4Params': self.px4_params_qml,
             'features': [f for f in FEATURES if f['enabled']],
             'appInfo': app_info(),   # pages not ready yet are hidden from the menu
         }
@@ -191,6 +212,8 @@ class GcsApp:
             ('voice', self.voice_qml.tick),
             ('alerts_qml', self.alerts_qml.flush),
             ('telemetry_qml', self.telemetry_qml.flush),
+            ('px4_params_qml', self.px4_params_qml.flush),
+            ('session', lambda: self.session.save_if_changed(now)),
         )
         for name, step in steps:
             try:
@@ -203,6 +226,7 @@ class GcsApp:
 
     def shutdown(self):
         self._ticker.stop()
+        self.session.save()
         # stop prefetching before the tile server closes SQLite
         if not self.prefetcher.cancel_and_wait(6.0):
             log.warning('Prefetch did not stop in time on shutdown')

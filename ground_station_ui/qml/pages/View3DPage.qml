@@ -17,7 +17,8 @@ Item {
     readonly property bool hasPose: pose.valid === true
     property string camMode: "follow"        // follow | free | top
     property bool showPlanned: true          // planned path from the last Send WP (remembered)
-    Settings { category: "view3d"; property alias showPlanned: page.showPlanned }
+    Settings { category: "view3d"; property alias showPlanned: page.showPlanned; property alias camMode: page.camMode }
+    Component.onCompleted: if (camMode !== "free") setCam(camMode)    // restore the last camera mode
     readonly property bool follow: camMode !== "free"
     readonly property var att: vehicle.attitude.values
     // Ground grid sized to the flight area: side = 2 x (largest distance reached from the origin + margin),
@@ -80,7 +81,13 @@ Item {
                     id: orbit
                     eulerRotation.x: -30
                     eulerRotation.y: -35
-                    PerspectiveCamera { id: camera; z: 450; clipNear: 1; clipFar: 100000 }
+                    // clip range follows the zoom: far = camera distance + the whole grid, so nothing in the flight
+                    // area is cut (the controller's automaticClipping would cap it at 100 m)
+                    PerspectiveCamera {
+                        id: camera; z: 450
+                        clipNear: Math.max(1, z / 1000)
+                        clipFar: z + page.gridSize * 200 + 10000
+                    }
                 }
             }
 
@@ -96,7 +103,9 @@ Item {
                 visible: vehicle.localPose.values.trailPoints > 1
                 geometry: Polyline { source: vehicle.trail3d; widthM: 0.05 * page.lineScale }   // 5 cm at close range
                 materials: PrincipledMaterial {
-                    baseColor: "#2f9bff"; lighting: PrincipledMaterial.NoLighting
+                    // opacity < 1: drawn in the transparent pass, after the planned ribbon, so the trail stays
+                    // visible inside the wider planned ribbon where both overlap
+                    baseColor: "#2f9bff"; lighting: PrincipledMaterial.NoLighting; opacity: 0.999
                     cullMode: PrincipledMaterial.NoCulling
                 }
             }
@@ -104,10 +113,11 @@ Item {
             // ---- planned path: last uploaded waypoints, anchored on the drone GPS + local pose ----
             Model {
                 visible: page.showPlanned && plannedPath.valid
-                geometry: Polyline { points: plannedPath.points; widthM: 0.06 * page.lineScale }
+                geometry: Polyline { points: plannedPath.points; widthM: 0.18 * page.lineScale }   // 3x the trail: the trail shows inside it
                 materials: PrincipledMaterial {
                     baseColor: Theme.accent; lighting: PrincipledMaterial.NoLighting
                     cullMode: PrincipledMaterial.NoCulling
+                    depthDrawMode: Material.NeverDepthDraw     // does not hide the flown trail drawn after it
                 }
             }
             Repeater3D {
@@ -153,7 +163,7 @@ Item {
             }
         }
 
-        OrbitCameraController { anchors.fill: parent; origin: orbit; camera: camera }
+        OrbitCameraController { anchors.fill: parent; origin: orbit; camera: camera; automaticClipping: false }
 
         // ---- info panel (left): Position / Orientation / Velocity ----
         Rectangle {

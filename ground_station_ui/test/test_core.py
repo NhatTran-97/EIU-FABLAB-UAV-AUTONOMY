@@ -152,9 +152,10 @@ def test_px4_param_profile_and_bytewise_int():
     assert link.sent == []                                  # PX4 not seen yet -> no request
     router.dispatch('px4', [px4_heartbeat()])
     w.tick(100.0)
-    assert sorted(m.param_id for m in link.sent) == ['EKF2_GPS_CTRL', 'EKF2_HGT_REF']
+    from ground_station_ui.core.vehicle.params import WATCHED
+    assert sorted(m.param_id for m in link.sent) == sorted(WATCHED)     # EKF2 profile + safety parameters
     w.tick(101.0)
-    assert len(link.sent) == 2                              # RETRY_S not elapsed
+    assert len(link.sent) == len(WATCHED)                   # RETRY_S not elapsed
 
     def pv(name, value):                                    # PX4 sends INT32 bytewise
         f = struct.unpack('<f', struct.pack('<i', value))[0]

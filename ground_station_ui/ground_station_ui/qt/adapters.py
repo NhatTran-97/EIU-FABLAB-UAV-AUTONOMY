@@ -78,6 +78,13 @@ class VehicleAdapter(QObject):
         self.vehicle.groups['track'].clear()
         self.adapters['track'].flush()
 
+    @Slot()
+    def clearFlownPath(self):
+        """Clear the flown path everywhere it is drawn: map track and 3D trail (saved GPX files are kept).
+        The session file is updated on the next save, so the path does not come back after a restart."""
+        self.clearTrack()
+        self.clearTrail()
+
     def flush(self):
         for a in self.adapters.values():
             a.flush()

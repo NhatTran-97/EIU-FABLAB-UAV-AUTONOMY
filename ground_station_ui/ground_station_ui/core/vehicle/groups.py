@@ -46,12 +46,23 @@ class _VehicleGroup(FactGroup):
 
 
 class StatusGroup(_VehicleGroup):
-    """Autopilot HEARTBEAT: link, flight mode, armed state, flight time."""
+    """Autopilot HEARTBEAT: link, flight mode, armed state, flight time.
+
+    landed (what the flight buttons use) is decided from the most reliable data available:
+      1. PX4 heartbeat alive and disarmed           -> ON GROUND (a disarmed drone is not flying)
+      2. PX4 EXTENDED_SYS_STATE received recently    -> its landed state
+      3. otherwise the height above Home from the Jetson (radio 433), when the Jetson link is alive
+      4. nothing known                               -> '—'
+    So the UI never keeps the last state PX4 sent (e.g. IN AIR after an RTL) once that report is old.
+    landedSource: 'px4', 'px4_disarmed', 'jetson' (estimate) or '' (unknown).
+    """
+    AIRBORNE_ALT_M = 0.5                # m above Home: in the air, for the estimate without PX4
 
     def __init__(self, vehicle):
         super().__init__(vehicle, linkAlive=False, heartbeatAge=-1.0, armed=False,
-                         mode='—', flightTime=0, landed='—', failsafe=False, source='—')
+                         mode='—', flightTime=0, landed='—', landedSource='', failsafe=False, source='—')
         self._last_hb = None
+        self._ext = None                # (time.monotonic(), landed text) of the last EXTENDED_SYS_STATE
         self._armed_at = None
         self._flight_prev = 0.0
 
@@ -61,7 +72,7 @@ class StatusGroup(_VehicleGroup):
 
     def on_ext_state(self, m, _link):
         if self.vehicle.is_autopilot(m, _link):
-            self.set(landed=LANDED.get(m.landed_state, '—'))
+            self._ext = (time.monotonic(), LANDED.get(m.landed_state, '—'))
 
     def on_heartbeat(self, m, _link):
         if m.autopilot == mavlink.MAV_AUTOPILOT_INVALID or m.type == mavlink.MAV_TYPE_GCS:
@@ -89,6 +100,16 @@ class StatusGroup(_VehicleGroup):
         if self._last_hb is not None:
             age = now - self._last_hb
             self.set(heartbeatAge=round(age, 1), linkAlive=age < LINK_TIMEOUT_S)
+        g = self.vehicle.groups
+        alt = g['flight'].values.get('altHome')
+        if self.values['linkAlive'] and not self.values['armed']:
+            self.set(landed='ON GROUND', landedSource='px4_disarmed')
+        elif self.values['linkAlive'] and self._ext is not None and now - self._ext[0] < LINK_TIMEOUT_S:
+            self.set(landed=self._ext[1], landedSource='px4')
+        elif g['companion'].values.get('linkAlive') and alt is not None:
+            self.set(landed='IN AIR' if alt > self.AIRBORNE_ALT_M else 'ON GROUND', landedSource='jetson')
+        else:
+            self.set(landed='—', landedSource='')
 
 
 def _gps_val(raw, scale, max_ok):
@@ -403,6 +424,20 @@ class LocalPoseGroup(_VehicleGroup):
         self.trail.clear()
         self.set(trailPoints=0, extentM=0.0)
 
+    def snapshot(self):
+        """3D trail for the session file, with the EKF reset counter it belongs to."""
+        return {'segments': [[list(p) for p in seg] for seg in self.trail.segments if seg],
+                'extentM': self.values['extentM'], 'reset': self._reset}
+
+    def restore(self, data):
+        """Inverse of snapshot(). The trail is in the EKF frame: if the first pose after the restart carries
+        another reset counter (EKF reset, PX4 rebooted), on_pose clears it as for any reset."""
+        segments = [[tuple(p) for p in seg] for seg in data.get('segments') or [] if seg]
+        self.trail.segments, self.trail.count = segments, sum(len(s) for s in segments)
+        self.trail._mark_reset()
+        self._reset = data.get('reset')
+        self.set(trailPoints=self.trail.count, extentM=float(data.get('extentM') or 0.0))
+
     def tick(self, now):
         src = self.values['source']
         if not src:
@@ -457,6 +492,9 @@ class TrackGroup(_VehicleGroup):
     DISPLAY_MAX = 6000
     MAX_FLIGHT_POINTS = 200000          # ~100 km at 0.5 m per point
     AIRBORNE_ALT_M = 0.5                # m above Home, flight detection without the autopilot heartbeat
+    RESUME_S = 600.0                    # a restored flight is continued if its last point is younger than this
+    RESUME_M = 50.0                     # ... and the drone is within this distance of it (else: a new flight)
+    STALE_S = 5.0                       # no position for this long while recording: the flight is closed
 
     def __init__(self, vehicle, save_dir=None):
         super().__init__(vehicle, recording=False, points=0, lengthM=0.0, lastFile='')
@@ -464,6 +502,8 @@ class TrackGroup(_VehicleGroup):
         self.path = PathLog()
         self._armed = False
         self._flight = []               # [lat, lon, alt_amsl, t_unix]
+        self._resume = None             # flight restored from the session, continued or saved on the next fix
+        self._last_rx = None            # time.monotonic() of the last accepted position
 
     def attach(self, router):
         router.subscribe('GLOBAL_POSITION_INT', self.on_global)
@@ -476,9 +516,20 @@ class TrackGroup(_VehicleGroup):
             armed = bool(status.get('armed'))
         else:                                       # companion only: no arming state available
             armed = m.relative_alt / 1000.0 > self.AIRBORNE_ALT_M
+        self._last_rx = time.monotonic()
+        resume, self._resume = self._resume, None
+        near = resume and m.lat != 0 and geo_dist_m(resume[-1][0], resume[-1][1],
+                                                    m.lat / 1e7, m.lon / 1e7) < self.RESUME_M
+        if resume and (not armed or not near):      # the flight ended while the app was closed: save it
+            self._flight = resume
+            self._save_flight()
+            self._flight = []
+            resume = None
         if armed != self._armed:
             self._armed = armed
-            if armed:
+            if armed and resume and time.time() - resume[-1][3] < self.RESUME_S:
+                self._flight = resume               # app restarted during the flight: same flight, same segment
+            elif armed:
                 self._flight = []
                 self.path.start_segment()
             else:
@@ -512,6 +563,30 @@ class TrackGroup(_VehicleGroup):
             self.set(lastFile=path)
         except OSError as e:
             self.set(lastFile=f'error: {e}')
+
+    def tick(self, now):
+        """Positions stopped while recording (link lost, or the source stops after landing): close the flight,
+        so REC does not stay on and the next flight starts its own segment."""
+        if self._armed and self._last_rx is not None and now - self._last_rx > self.STALE_S:
+            self._armed = False
+            self._save_flight()
+            self.set(recording=False)
+
+    def snapshot(self):
+        """Displayed path and the flight being recorded, for the session file."""
+        return {'segments': [[list(p) for p in seg] for seg in self.path.segments if seg],
+                'lengthM': self.values['lengthM'], 'points': self.values['points'],
+                'flight': self._flight if self._armed else []}
+
+    def restore(self, data):
+        """Inverse of snapshot(). A flight in progress is kept aside until the next position: it is continued
+        if the drone is still flying, otherwise written to GPX."""
+        segments = [[tuple(p) for p in seg] for seg in data.get('segments') or [] if seg]
+        self.path.segments, self.path.count = segments, sum(len(s) for s in segments)
+        self.path._mark_reset()
+        self.set(lengthM=float(data.get('lengthM') or 0.0), points=int(data.get('points') or 0))
+        flight = [list(p) for p in data.get('flight') or []]
+        self._resume = flight if len(flight) >= 1 else None
 
     def clear(self):
         """Clear the displayed path; _flight and saved GPX files are kept."""
@@ -602,6 +677,10 @@ class MissionProgressGroup(_VehicleGroup):
     def tick(self, now):
         if self._last is not None and now - self._last > self.STALE_S:
             self.set(valid=False)
+        st = self.vehicle.groups['status'].values
+        if self.values['valid'] and self.values['state'] in ('active', 'paused') \
+                and st.get('linkAlive') and not st.get('armed'):
+            self.set(valid=False)          # PX4 reports disarmed: no mission can be running, whatever was last sent
 
 
 class CompanionGroup(_VehicleGroup):

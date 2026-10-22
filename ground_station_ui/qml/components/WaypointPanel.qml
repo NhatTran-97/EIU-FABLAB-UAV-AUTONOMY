@@ -6,6 +6,7 @@ import QtQuick.Controls.Basic
 Rectangle {
     id: panel
     property bool addMode: false
+    property bool addLocked: false      // mission running: no new waypoints until Hold / hover / landed
     property int selected: -1
     signal addModeToggled()
     signal select(int index)
@@ -25,9 +26,30 @@ Rectangle {
                 color: Theme.text; font.pixelSize: 16; font.bold: true
                 Layout.fillWidth: true
             }
+            // add mode toggle: outlined when off, filled while clicks on the map add waypoints
             Button {
-                text: panel.addMode ? "✓ Xong" : "＋ Add"
-                highlighted: panel.addMode
+                text: panel.addMode ? "✓ Done" : "＋ Add"
+                implicitWidth: 96; implicitHeight: 36
+                enabled: !panel.addLocked
+                opacity: enabled ? 1 : 0.4
+                ToolTip.visible: hovered || (panel.addLocked && addLockHover.hovered)
+                ToolTip.text: panel.addLocked ? "Mission running: press Hold to add waypoints"
+                            : panel.addMode ? "Adding: click the map to place waypoints. Click to stop."
+                                            : "Click the map to add waypoints"
+                HoverHandler { id: addLockHover }
+                background: Rectangle {
+                    radius: 6
+                    color: panel.addMode ? (parent.down ? Qt.darker(Theme.accent, 1.4)
+                                                        : parent.hovered ? Qt.lighter(Theme.accent, 1.15) : Theme.accent)
+                                         : (parent.down ? Qt.darker(Theme.panelAlt, 1.3)
+                                                        : parent.hovered ? Qt.lighter(Theme.panelAlt, 1.3) : Theme.panelAlt)
+                    border.color: Theme.accent; border.width: panel.addMode ? 0 : 1.5
+                }
+                contentItem: Text {
+                    text: parent.text; font.pixelSize: 14; font.bold: panel.addMode
+                    color: panel.addMode ? "white" : Theme.text
+                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                }
                 onClicked: panel.addModeToggled()
             }
             Button {
@@ -66,23 +88,24 @@ Rectangle {
             Text { text: "m/s"; color: Theme.textDim }
         }
 
+        Text {
+            text: "Arrival tolerance (m)"; color: Theme.textDim; font.pixelSize: 12
+            ToolTip.visible: tolHover.hovered
+            ToolTip.text: "Distance at which a waypoint counts as reached (horizontal XY / vertical Z), for the whole mission"
+            HoverHandler { id: tolHover }
+        }
         RowLayout {
-            Text {
-                text: "Arrival tolerance"; color: Theme.textDim; font.pixelSize: 12; Layout.fillWidth: true
-                ToolTip.visible: tolHover.hovered
-                ToolTip.text: "Distance at which a waypoint counts as reached (horizontal XY / vertical Z), for the whole mission"
-                HoverHandler { id: tolHover }
-            }
-            // stored in cm (SpinBox only takes integers) -> 5 cm steps
+            // stored in cm (SpinBox only takes integers) -> 5 cm steps, shown in metres
             component TolBox: SpinBox {
-                stepSize: 5; editable: true; implicitWidth: 104
+                stepSize: 5; editable: true
+                Layout.fillWidth: true; Layout.minimumWidth: 120
                 textFromValue: (v, locale) => (v / 100).toFixed(2)
                 valueFromText: (text, locale) => Math.round(parseFloat(text.replace(",", ".")) * 100)
             }
             Text { text: "XY"; color: Theme.textDim; font.pixelSize: 12 }
             TolBox {
                 from: 20; to: 500
-                value: Math.round((mission.values.xyTolerance || 0.75) * 100)
+                value: Math.round((mission.values.xyTolerance || 0.5) * 100)
                 onValueModified: mission.setTolerances(value / 100, 0)
             }
             Text { text: "Z"; color: Theme.textDim; font.pixelSize: 12 }
@@ -91,7 +114,6 @@ Rectangle {
                 value: Math.round((mission.values.zTolerance || 0.5) * 100)
                 onValueModified: mission.setTolerances(0, value / 100)
             }
-            Text { text: "m"; color: Theme.textDim }
         }
 
         // while a mission runs, speed and tolerance changes are applied at once (MAV_CMD_USER_2)
@@ -113,6 +135,13 @@ Rectangle {
 
         ListView {
             id: list
+            // keep the waypoint being flown to in view
+            Connections {
+                target: commands
+                function onFlyingIndexChanged() {
+                    if (commands.flyingIndex >= 0) list.positionViewAtIndex(commands.flyingIndex, ListView.Contain)
+                }
+            }
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
@@ -124,13 +153,19 @@ Rectangle {
                 required property int index
                 readonly property var wp: mission.items[index] || ({ seq: 0, lat: 0, lon: 0, alt: 0, task: "none" })
                 readonly property bool pick: (wp.task || "none") !== "none"
+                // mission progress: the waypoint being flown to, and those already passed
+                readonly property bool flying: commands.flyingIndex === index
+                readonly property bool passed: commands.flyingIndex > index
                 // prohibited / restricted zone containing the waypoint ('' = clear); revision: re-evaluated when zones reload
                 readonly property string zone: (airspace.revision, airspace.namesAt(wp.lat, wp.lon))
                 width: list.width
                 height: rowCol.implicitHeight + 16
                 radius: 6
-                color: panel.selected === index ? Theme.panelAlt : "transparent"
-                border.color: panel.selected === index ? Theme.warn : Theme.border
+                color: flying ? Qt.rgba(Theme.ok.r, Theme.ok.g, Theme.ok.b, 0.12)
+                     : panel.selected === index ? Theme.panelAlt : "transparent"
+                border.color: flying ? Theme.ok : panel.selected === index ? Theme.warn : Theme.border
+                border.width: flying ? 2 : 1
+                opacity: passed ? 0.55 : 1
 
                 MouseArea { anchors.fill: parent; onClicked: panel.select(row.index) }
 
@@ -144,14 +179,19 @@ Rectangle {
                     spacing: 8
                     Rectangle {
                         width: 26; height: 26; radius: 13
-                        color: panel.selected === row.index ? Theme.warn : Theme.accent
-                        Text { anchors.centerIn: parent; text: row.wp.seq; color: "white"; font.bold: true; font.pixelSize: 12 }
+                        color: row.flying ? Theme.ok : panel.selected === row.index ? Theme.warn : Theme.accent
+                        Text { anchors.centerIn: parent; text: row.passed ? "✓" : row.wp.seq; color: "white"; font.bold: true; font.pixelSize: 12 }
                     }
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 0
                         Text { text: row.wp.lat.toFixed(6); color: Theme.text; font.pixelSize: 12; font.family: "monospace" }
                         Text { text: row.wp.lon.toFixed(6); color: Theme.text; font.pixelSize: 12; font.family: "monospace" }
+                        Text {
+                            visible: row.flying
+                            text: vehicle.missionProgress.values.state === "paused" ? "⏸ Paused here" : "➤ Flying to this point"
+                            color: Theme.ok; font.pixelSize: 11; font.bold: true
+                        }
                         Text {
                             visible: row.zone !== ""
                             text: "⚠ " + row.zone

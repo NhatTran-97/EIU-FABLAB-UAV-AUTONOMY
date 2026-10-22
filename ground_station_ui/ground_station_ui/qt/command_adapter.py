@@ -10,6 +10,7 @@ from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 
 from ground_station_ui.core.commands.flight import ROUTE_NAMES, FlightCommander
 from ground_station_ui.core.commands.sender import CommandTarget
+from ground_station_ui.core.mission.mission import flying_index
 from ground_station_ui.core.mavlink import drone_dialect as mavlink
 from ground_station_ui.qt.adapters import GroupAdapter
 
@@ -19,6 +20,7 @@ class CommandAdapter(GroupAdapter):
     direct.values = the same for direct PX4 commands. See core/commands/sender.py"""
 
     gatesChanged = Signal()
+    flyingChanged = Signal()
 
     SETTINGS_DELAY_MS = 600     # live settings are sent once the value has stopped changing for this long
 
@@ -35,6 +37,7 @@ class CommandAdapter(GroupAdapter):
         self._settings_timer.setInterval(self.SETTINGS_DELAY_MS)
         self._settings_timer.timeout.connect(self._send_settings)
         mission.on_options_changed = self._settings_timer.start
+        self._flying = -1
         self.upload = GroupAdapter(uploader, self)      # waypoint upload state for QML
         self.direct = GroupAdapter(direct_sender, self)  # direct PX4 command state
         self.target = CommandTarget(cfg.get('link', 'jetson'), cfg.get('target_system', 1),
@@ -150,6 +153,11 @@ class CommandAdapter(GroupAdapter):
         self.upload.flush()
         self.live.flush()
         self.direct.flush()
+        flying = flying_index(self.mission.items, self.uploader.uploaded,
+                              self.vehicle.groups['missionProgress'].values)
+        if flying != self._flying:
+            self._flying = flying
+            self.flyingChanged.emit()
         gates = self.commander.gates()
         gates['owner'] = self.commander.lock.owner or ''
         gates['jetsonLink'] = self.commander.vehicle.companion_link     # 433 / SITL UDP
@@ -163,3 +171,5 @@ class CommandAdapter(GroupAdapter):
     takeoffAltitudes = Property('QVariantMap', lambda self: self._takeoff, constant=True)
     targetLink = Property(str, lambda self: self.commander.vehicle.companion_link, notify=gatesChanged)
     gates = Property('QVariantMap', lambda self: self._gates, notify=gatesChanged)
+    # index (0-based) in the waypoint list of the waypoint being flown to; -1 when not flying the listed mission
+    flyingIndex = Property(int, lambda self: self._flying, notify=flyingChanged)
