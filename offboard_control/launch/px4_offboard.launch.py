@@ -28,6 +28,7 @@ def generate_launch_description():
             'position_timeout': 1.0,        # s; reject Take-off if the position is older
             'cruise_speed': 2.0,            # m/s between waypoints when the GCS sends no speed
             'max_cruise_speed': 5.0,        # m/s; speeds chosen on the GCS are limited to this
+            'px4_xy_p': 0.95,               # = PX4 MPC_XY_P; places the speed carrot (wrong value -> wrong speed)
                                             # (PX4 MPC_XY_VEL_MAX stays the hard limit)
             'yaw_mode': 'waypoint',         # nose towards the next waypoint ('hold': keep take-off heading)
             'yaw_rate_deg': 45.0,           # deg/s, maximum commanded turn rate

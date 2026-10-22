@@ -187,7 +187,7 @@ The setpoint is either a position or a velocity, whichever `mission_manager` sen
 
 ### Pilot override
 
-`vehicle_control_mode.flag_control_offboard_enabled` tells the node whether PX4 is in OFFBOARD; changes are published on `/mission/offboard_active`. When PX4 leaves OFFBOARD after having reached it (sticks moved with `COM_RC_OVERRIDE`, RC mode switch, GCS Hold or RTL), the node keeps streaming but ignores targets and makes the setpoint follow the current position. When OFFBOARD comes back, either because the pilot flips the RC switch to Offboard or because `/mission/resume` makes the node send DO_SET_MODE OFFBOARD, the drone continues from where the pilot left it instead of jumping back to an old target.
+`vehicle_control_mode.flag_control_offboard_enabled` tells the node whether PX4 is in OFFBOARD; changes are published on `/mission/offboard_active`. When PX4 leaves OFFBOARD after having reached it (sticks moved with `COM_RC_OVERRIDE`, RC mode switch, GCS Hold or RTL), the node keeps the `OffboardControlMode` heartbeat but stops publishing `TrajectorySetpoint`, ignores targets, and makes its setpoint follow the current position. `/fmu/in/trajectory_setpoint` is the same uORB topic PX4's own modes (RTL, Land, Hold) write; a hold setpoint mixed into an RTL keeps the throttle up on the ground, so PX4 never detects the landing and does not disarm. When OFFBOARD comes back, either because the pilot flips the RC switch to Offboard or because `/mission/resume` makes the node send DO_SET_MODE OFFBOARD, the drone continues from where the pilot left it instead of jumping back to an old target.
 
 ### Position forwarding
 

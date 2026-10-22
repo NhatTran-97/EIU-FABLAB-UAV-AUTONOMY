@@ -42,7 +42,8 @@ Values set in `launch/px4_offboard.launch.py`; every other parameter keeps its d
 | | `position_timeout` | `1.0` s | maximum age of the position for Take-off |
 | | `cruise_speed` | `2.0` m/s | speed between waypoints when the ground station sends none |
 | | `max_cruise_speed` | `5.0` m/s | upper limit for the mission speed chosen on the ground station |
-| | `xy_tolerance`, `z_tolerance` | `0.75`, `0.5` m | arrival tolerances when the ground station sends none (it can set them at start and during the mission) |
+| | `px4_xy_p` | `0.95` | must equal PX4 `MPC_XY_P`; the speed carrot is placed from it |
+| | `xy_tolerance`, `z_tolerance` | `0.5`, `0.5` m | arrival tolerances when the ground station sends none (it can set them at start and during the mission) |
 | | `yaw_mode` | `waypoint` | nose towards the next waypoint; `hold` keeps the take-off heading |
 | | `yaw_rate_deg` | `45` deg/s | maximum commanded turn rate |
 | | `turn_first_deg` | `10` deg | at each waypoint, a larger heading error makes the drone turn in place before moving |

@@ -280,7 +280,7 @@ def test_arrival_tolerances_from_the_ground_station():
     # waypoint 1 counts as reached ~3 m before the point
     assert sim.run(30, until=lambda: sim.node.plan_runner and sim.node.plan_runner.current_item == 2)
     assert 6.0 < sim.pos[0] < 8.5
-    assert sim.node.step_cfg.xy_tolerance == 0.75                     # node default unchanged
+    assert sim.node.step_cfg.xy_tolerance == 0.5                      # node default unchanged
 
 
 def test_live_settings_change_a_running_mission_only():
@@ -394,3 +394,20 @@ def test_hover_keep_distance_is_off_by_default():
         sim.node.avoidance_status_callback(st)
         sim.run(0.1)
     assert math.hypot(sim.pos[0] - start[0], sim.pos[1] - start[1]) < 0.05
+
+
+def test_rtl_pauses_even_when_px4_was_already_in_offboard_before_take_off():
+    """PX4 returns to OFFBOARD after a disarm, so the next flight starts with OFFBOARD already on and
+    offboard_control reports no change; leaving OFFBOARD (RTL) must still pause the mission."""
+    sim = Sim()
+    sim.run(0.1)
+    sim.set_offboard(True)                     # left over from the previous flight, before take-off
+    ack = sim.command('takeoff', alt=5.0)
+    assert ack['result'] == 'accepted'
+    assert sim.run(20, until=lambda: sim.state() == 'HOVER')      # no new offboard_active message
+    sim.upload([wp(30, 0)])
+    sim.command('mission')
+    sim.run(1.0)
+    sim.set_offboard(False)                    # RTL from the ground station
+    sim.run(0.2)
+    assert sim.state() == 'PAUSED'

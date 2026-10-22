@@ -22,8 +22,9 @@ Interface with mission_manager:
          /mission/geo_reference    (NavSatFix) GPS origin of the EKF (latched)
 
 Pilot override: when PX4 leaves OFFBOARD during a flight (sticks moved with COM_RC_OVERRIDE, mode switch,
-Hold, RTL), the node keeps streaming with the setpoint following the current position. Switching back to
-OFFBOARD (RC mode switch or /mission/resume) therefore starts from where the pilot left the drone.
+Hold, RTL), the node keeps the OffboardControlMode heartbeat but stops TrajectorySetpoint, which is the topic
+PX4's own modes write (mixing in a hold setpoint keeps an RTL from landing). The setpoint follows the current
+position, so switching back to OFFBOARD (RC mode switch or /mission/resume) starts from where the drone is.
 
 Quick test without mission_manager:
     ros2 topic pub --once /mission/start std_msgs/msg/Bool "{data: true}"
@@ -32,6 +33,7 @@ Quick test without mission_manager:
 import math
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from geometry_msgs.msg import Point, Vector3
@@ -246,6 +248,11 @@ class OffboardControlNode(Node):
         """
         self.update_armed(bool(msg.flag_armed))
         active = bool(msg.flag_control_offboard_enabled)
+        # PX4 can already be in OFFBOARD before the flight (it returns to OFFBOARD after a disarm): then there is
+        # no off -> on change, so an armed flight in OFFBOARD also counts as OFFBOARD reached.
+        if active and self.flight_active and self.was_armed and not self.offboard_seen:
+            self.offboard_seen = True
+            self.get_logger().info('PX4 in OFFBOARD (already selected before the flight)')
         if active == self.offboard_active:
             return
         self.offboard_active = active
@@ -255,6 +262,8 @@ class OffboardControlNode(Node):
         if active:
             self.offboard_seen = True
             self.hold_current_position()
+            if not self.land_command_sent:
+                self.publish_trajectory_setpoint()    # back in OFFBOARD: a setpoint at once, not at the next tick
             self.get_logger().info('PX4 in OFFBOARD')
         elif self.offboard_seen and not self.land_command_sent:
             self.get_logger().warning('PX4 left OFFBOARD (pilot / ground station took over) -- tracking position')
@@ -335,6 +344,8 @@ class OffboardControlNode(Node):
         if self.offboard_active:
             return
         self.hold_current_position()
+        self.publish_offboard_control_mode()
+        self.publish_trajectory_setpoint()            # PX4 needs a valid setpoint at the switch
         self.get_logger().info('Resume requested: requesting OFFBOARD mode...')
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param1=1.0, param2=6.0)
 
@@ -488,7 +499,10 @@ class OffboardControlNode(Node):
               and (self.velocity_time is None or now_s - self.velocity_time > self.velocity_timeout_s)):
             self.hold_current_position()          # velocity setpoints stopped: hold here
         self.publish_offboard_control_mode()
-        if not self.land_command_sent:
+        # /fmu/in/trajectory_setpoint is the uORB topic PX4's own modes (RTL, Land, Hold) also write. While another
+        # mode flies the drone, publishing here mixes "hold this position" into its setpoints: an RTL then never
+        # lowers the throttle on the ground and PX4 does not disarm. Only the heartbeat is sent then.
+        if not self.land_command_sent and not self.overridden():
             self.publish_trajectory_setpoint()
 
         # Warmup done: request OFFBOARD (custom main mode 6), then ARM.
@@ -532,11 +546,17 @@ def main(args=None) -> None:
 
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
-        node.get_logger().info('Shutting down offboard node')
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass                    # Ctrl+C / launch shutdown: rclpy has already shut the context down
+    except RuntimeError:
+        # Humble race: a message taken while Ctrl+C shuts the context down raises RuntimeError in take_message;
+        # harmless during shutdown, a real error otherwise
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():          # calling shutdown twice raises RCLError
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

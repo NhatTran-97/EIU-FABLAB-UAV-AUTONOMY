@@ -41,7 +41,7 @@ class Failed:
 
 @dataclass
 class StepConfig:
-    xy_tolerance: float = 0.75          # m, goal reached horizontally
+    xy_tolerance: float = 0.5           # m, goal reached horizontally
     z_tolerance: float = 0.5            # m, goal reached vertically
     goal_hold_time: float = 0.5         # s inside the tolerance before a goal counts as reached
     agl_tolerance: float = 0.2          # m, height above ground reached

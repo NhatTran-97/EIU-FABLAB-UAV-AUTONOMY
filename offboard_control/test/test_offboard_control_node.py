@@ -101,3 +101,28 @@ def test_unchanged_target_is_not_published_twice(sim):
     for _ in range(5):
         sim.node.target_position_callback(Point(x=1.0, y=2.0, z=-3.0))
     assert sim.setpoints == [[1.0, 2.0, -3.0]]                        # timer stream does the rest
+
+
+def test_override_detected_when_offboard_was_already_on_before_the_flight(sim):
+    sim.mode(False, True)                      # disarmed, PX4 still in OFFBOARD from the last flight
+    sim.node.start_request_callback(Bool(data=True))
+    sim.ticks(sim.node.warmup_ticks + 1)
+    sim.mode(True, True)                       # armed; OFFBOARD flag unchanged
+    assert sim.node.offboard_seen
+    sim.mode(True, False)                      # RTL
+    assert sim.node.overridden()
+
+
+def test_no_trajectory_setpoints_while_another_mode_flies(sim):
+    """RTL / Hold / pilot: PX4's own mode writes trajectory_setpoint; ours would keep an RTL from landing."""
+    sim.mode(False, False)
+    sim.node.start_request_callback(Bool(data=True))
+    sim.ticks(sim.node.warmup_ticks + 1)
+    sim.mode(True, True)
+    sim.ticks(3)
+    sim.mode(True, False)                      # RTL
+    sim.setpoints.clear()
+    sim.ticks(20)
+    assert sim.setpoints == []
+    sim.mode(True, True)                       # back in OFFBOARD: setpoint at once
+    assert len(sim.setpoints) == 1

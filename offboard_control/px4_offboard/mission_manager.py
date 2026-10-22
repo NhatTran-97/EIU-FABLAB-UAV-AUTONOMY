@@ -7,7 +7,7 @@ into a plan of steps and run by the mission pipeline (package mission_pipeline, 
 
 GCS interface (via drone_telemetry):
     /gcs/command      JSON command: {"id": n, "cmd": "takeoff", "alt": 5.0}, {"cmd": "land"},
-                      {"cmd": "mission", "options": {"avoidance": false, "speed": 2.0, "xy_tolerance": 0.75,
+                      {"cmd": "mission", "options": {"avoidance": false, "speed": 2.0, "xy_tolerance": 0.5,
                       "z_tolerance": 0.5}}, {"cmd": "continue"}, or {"cmd": "settings", "options": {"speed",
                       "xy_tolerance", "z_tolerance"}} to change a running mission (0 = unchanged)
     /gcs/command_ack  JSON result: {"id": n, "cmd": ..., "result": "accepted" | "denied", "text": ...}
@@ -36,6 +36,7 @@ import math
 from enum import Enum
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import Point, PointStamped, Vector3
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -155,7 +156,7 @@ class MissionManagerNode(Node):
         # offboard_control / PX4).
         self.declare_parameter('position_timeout', 1.0)
         # Defaults for reaching a target; the ground station can override them per mission (Start mission).
-        self.declare_parameter('xy_tolerance', 0.75)
+        self.declare_parameter('xy_tolerance', 0.5)
         self.declare_parameter('z_tolerance', 0.5)
         # Hold times are in seconds, not timer ticks, so changing control_rate_hz does not change behaviour.
         self.declare_parameter('goal_hold_time', 0.5)
@@ -168,6 +169,8 @@ class MissionManagerNode(Node):
         self.declare_parameter('cruise_speed', 2.0)
         # Upper limit for the speed chosen on the ground station (m/s); faster requests are reduced to it.
         self.declare_parameter('max_cruise_speed', 5.0)
+        # = PX4 MPC_XY_P: PX4 flies about px4_xy_p x distance to the setpoint, used to place the speed carrot.
+        self.declare_parameter('px4_xy_p', 0.95)
         # Heading while flying to a waypoint: 'waypoint' (nose towards the waypoint) or 'hold' (take-off heading).
         # A finite mission_yaw overrides both with a fixed heading.
         self.declare_parameter('yaw_mode', 'waypoint')
@@ -216,6 +219,9 @@ class MissionManagerNode(Node):
         self.mission_yaw = float(g('mission_yaw'))
         self.cruise_speed = float(g('cruise_speed'))
         self.max_cruise_speed = float(g('max_cruise_speed'))
+        self.px4_xy_p = float(g('px4_xy_p'))
+        if self.px4_xy_p <= 0.0:
+            raise ValueError('Parameter "px4_xy_p" must be > 0')
         self.allow_avoidance = bool(g('allow_avoidance'))
         self.avoidance_ready_timeout = float(g('avoidance_ready_timeout'))
         self.hover_keep_distance = float(g('hover_keep_distance'))
@@ -362,6 +368,9 @@ class MissionManagerNode(Node):
         """Pause when PX4 has left OFFBOARD during a flight, unless a planned hand-over is running."""
         if self.state not in FLYING_STATES or self.state == MissionState.PAUSED:
             return
+        if self.flight_active and self.offboard_active:
+            # also when PX4 was already in OFFBOARD before the flight (no off -> on change is reported then)
+            self.offboard_seen = True
         if not (self.flight_active and self.offboard_seen) or self.offboard_active:
             return
         step = self.plan_runner.current_step if self.plan_runner and self.state == MissionState.MISSION else None
@@ -628,7 +637,7 @@ class MissionManagerNode(Node):
         speed = options.speed or self.cruise_speed
         limited = speed > self.max_cruise_speed
         speed = min(speed, self.max_cruise_speed)
-        self.ctx.nav = DirectNav(speed)
+        self.ctx.nav = DirectNav(speed, xy_p=self.px4_xy_p)
         self.plan_runner.start(self.ctx)
         self.transition_to(MissionState.MISSION)
         return True, (f'mission started: {len(self.gcs_mission)} waypoints at {speed:.1f} m/s'
@@ -948,11 +957,17 @@ def main(args=None) -> None:
 
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass                    # Ctrl+C / launch shutdown: rclpy has already shut the context down
+    except RuntimeError:
+        # Humble race: a message taken while Ctrl+C shuts the context down raises RuntimeError in take_message;
+        # harmless during shutdown, a real error otherwise
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():          # calling shutdown twice raises RCLError
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

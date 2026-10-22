@@ -130,7 +130,7 @@ There are two ways the pilot ends up flying during a mission, and the system tre
 | Done when | the pilot switches back to Offboard, or Continue is pressed | the pilot switches back to Offboard, or Continue is pressed |
 | Afterwards | the plan continues with the next step (`Ascend`) | the interrupted step restarts from where the drone is now |
 
-In both cases `offboard_control` keeps streaming while the pilot flies, with the setpoint following the drone, so returning to OFFBOARD does not move it. Continue sent while PX4 is not in OFFBOARD makes `offboard_control` request OFFBOARD again.
+In both cases `offboard_control` keeps only the OFFBOARD heartbeat while the pilot (or RTL / Hold) flies, with its setpoint following the drone, and sends that setpoint again the moment OFFBOARD returns, so returning to OFFBOARD does not move it. Continue sent while PX4 is not in OFFBOARD makes `offboard_control` request OFFBOARD again.
 
 ### Manual pick sequence
 
@@ -168,7 +168,7 @@ Task steps (Descend, Search, Align, Hook, Ascend) keep the heading of the arriva
 
 The speed between waypoints is set on the ground station (*Mission speed* in the waypoint list) and sent with Start mission; it applies to every leg. A change on the ground station during the mission takes effect on the current leg. Without a speed from the ground station, `cruise_speed` (2 m/s) is used, and any speed above `max_cruise_speed` (5 m/s) is reduced to it (the ACK says "limited").
 
-Without avoidance, `DirectNav` limits the speed between waypoints to that mission speed. It moves a carrot from the start of the leg towards the waypoint at that speed and keeps it at most `max_lead` (3 m) ahead of the drone. PX4's limits stay in force as the hard ceiling and should be set to match:
+Without avoidance, `DirectNav` limits the speed between waypoints to that mission speed. It moves a carrot from the start of the leg towards the waypoint at that speed and keeps it at most 1.5 × speed / `px4_xy_p` (at least 3 m) ahead of the drone. PX4 flies a position setpoint at about `MPC_XY_P` × distance, so a fixed 3 m limit would cap the speed at about 2.9 m/s; `px4_xy_p` must therefore match `MPC_XY_P`. PX4's limits stay in force as the hard ceiling and should be set to match:
 
 | PX4 parameter | Role |
 |---|---|

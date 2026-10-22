@@ -291,3 +291,29 @@ def test_yaw_mode_hold_keeps_take_off_heading():
     ex.start(ctx)
     assert run(ex, ctx, 30) == DONE
     assert all(math.isnan(y) for _, y in ctx.yaw_log)
+
+
+def test_direct_nav_reaches_cruise_speeds_above_3_m_s_with_a_px4_like_controller():
+    """PX4 position control flies ~MPC_XY_P x distance: a fixed 3 m carrot lead capped this at ~2.9 m/s."""
+    nav = DirectNav(cruise_speed=5.0, xy_p=0.95)
+
+    class Ctx:
+        t, pos = 0.0, (0.0, 0.0, -5.0)
+
+        def now(self):
+            return self.t
+
+        @property
+        def position(self):
+            return self.pos
+
+    ctx = Ctx()
+    goal = (200.0, 0.0, -5.0)
+    nav.begin(ctx, goal)
+    dt, v = 0.05, 0.0
+    for _ in range(int(20 / dt)):
+        sp = nav.setpoint(ctx, goal)
+        v = min(12.0, 0.95 * (sp[0] - ctx.pos[0]))           # P controller, MPC_XY_VEL_MAX 12
+        ctx.t += dt
+        ctx.pos = (ctx.pos[0] + v * dt, 0.0, -5.0)
+    assert 4.7 < v <= 5.05

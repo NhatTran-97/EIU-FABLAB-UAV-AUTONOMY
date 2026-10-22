@@ -24,16 +24,26 @@ class DirectNav:
 
     The setpoint is a carrot that moves from the start point towards the goal at cruise_speed (m/s), so PX4
     never sees a far-away setpoint and flies the leg at that speed instead of its maximum. The carrot stays
-    at most max_lead metres ahead of the drone, so it waits when the drone lags (wind, slow climb).
+    at most lead() metres ahead of the drone, so it waits when the drone lags (wind, slow climb).
     cruise_speed <= 0 disables the limit: the setpoint is the goal itself.
+
+    PX4 flies a position setpoint at about MPC_XY_P x distance, so following the carrot at cruise_speed needs
+    a lag of cruise_speed / xy_p. The lead limit is LEAD_FACTOR times that lag (at least max_lead); a fixed
+    3 m limit would cap the speed at about 0.95 x 3 = 2.9 m/s whatever cruise_speed is.
     """
+    LEAD_FACTOR = 1.5
     name = 'direct'
     mode = NOMINAL
 
-    def __init__(self, cruise_speed=0.0, max_lead=3.0):
-        self.cruise_speed = cruise_speed
+    def __init__(self, cruise_speed=0.0, max_lead=3.0, xy_p=0.95):
+        self.cruise_speed = cruise_speed          # may change during the leg (live settings)
         self.max_lead = max_lead
+        self.xy_p = xy_p                          # = PX4 MPC_XY_P
         self.carrot = None
+
+    def lead(self):
+        """Largest carrot distance ahead of the drone (m) for the current cruise_speed."""
+        return max(self.max_lead, self.LEAD_FACTOR * self.cruise_speed / self.xy_p)
 
     def begin(self, ctx, goal):
         self.carrot = ctx.position
@@ -46,7 +56,7 @@ class DirectNav:
         dt, self.t = max(0.0, now - self.t), now
         remaining = math.dist(self.carrot, goal)
         pos = ctx.position
-        if remaining > 1e-6 and (pos is None or math.dist(self.carrot, pos) < self.max_lead):
+        if remaining > 1e-6 and (pos is None or math.dist(self.carrot, pos) < self.lead()):
             k = min(1.0, self.cruise_speed * dt / remaining)
             self.carrot = tuple(c + k * (g - c) for c, g in zip(self.carrot, goal))
         return self.carrot
