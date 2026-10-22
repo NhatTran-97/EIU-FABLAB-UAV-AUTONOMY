@@ -1,0 +1,10 @@
+#requets 
+uint8 mode 
+uint8 NONE=0
+uint8 OFFBOARD=1
+uint8 LAND=2
+---
+#response 
+bool accepted 
+string msg 
+

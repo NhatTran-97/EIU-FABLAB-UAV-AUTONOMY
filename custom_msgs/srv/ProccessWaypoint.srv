@@ -1,0 +1,5 @@
+nav_msgs/Path raw_path 
+---
+bool success
+string msg 
+nav_msgs/Path smoothed_path 
